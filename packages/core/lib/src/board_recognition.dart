@@ -988,18 +988,29 @@ class BoardRecognition {
     final modeV = (maxBin * binSize + binSize / 2).toDouble();
     debug.clusterCenters = [modeV];
 
-    var thresholdBB = modeV - 50.0;
-    var thresholdBW = modeV + 40.0;
-    thresholdBB = max(thresholdBB, 50.0);
-    thresholdBW = min(thresholdBW, 220.0);
+    // 根據實際 V range 縮放門檻：螢幕拍照對比度低，gap 要跟著縮小
+    final vRange = maxV - minV;
+    final scaleFactor = (vRange / 180.0).clamp(0.35, 1.0);
+
+    var thresholdBB = modeV - 50.0 * scaleFactor;
+    var thresholdBW = modeV + 40.0 * scaleFactor;
+    thresholdBB = max(thresholdBB, 35.0);
+    thresholdBW = min(thresholdBW, 230.0);
 
     debug.thresholdBlackBoard = thresholdBB;
     debug.thresholdBoardWhite = thresholdBW;
 
     final satLimitBlack = max(boardMedianS * 2.5, 60.0);
-    final satLimitWhite = max(min(boardMedianS * 0.8, 60.0), 25.0);
+    final satLimitWhite = max(boardMedianS * 1.5, 40.0);
     debug.satLimitBlack = satLimitBlack;
     debug.satLimitWhite = satLimitWhite;
+
+    // stdV 統計：棋子表面均勻，stdV 低；空交叉點有格線，stdV 高
+    final sortedStdV = validSamples.map((s) => s.stdV).toList()..sort();
+    final medianStdV = sortedStdV[sortedStdV.length ~/ 2];
+    final uniformThreshold = medianStdV * 0.75;
+
+    _log('[BoardRecognition] vRange=${vRange.toStringAsFixed(0)}, scale=${scaleFactor.toStringAsFixed(2)}, medianStdV=${medianStdV.toStringAsFixed(1)}');
 
     // === 分類 ===
     for (final sample in samples) {
@@ -1008,16 +1019,30 @@ class BoardRecognition {
         continue;
       }
 
-      if (sample.avgV < thresholdBB) {
-        if (sample.avgS < satLimitBlack) {
+      final isUniform = sample.stdV < uniformThreshold;
+
+      // 主要判定：超過門檻直接分類
+      if (sample.avgV < thresholdBB && sample.avgS < satLimitBlack) {
+        grid[sample.row][sample.col] = StoneColor.black;
+        debug.blackCount++;
+      } else if (sample.avgV > thresholdBW && sample.avgS < satLimitWhite) {
+        grid[sample.row][sample.col] = StoneColor.white;
+        debug.whiteCount++;
+      } else if (isUniform) {
+        // 邊界案例：未過門檻但表面均勻 → 用 stdV 輔助判定
+        // 均勻 + 明顯偏亮 → 可能是白子
+        // 均勻 + 明顯偏暗 → 可能是黑子
+        final halfGapWhite = (thresholdBW - modeV) * 0.5;
+        final halfGapBlack = (modeV - thresholdBB) * 0.5;
+        if (sample.avgV > modeV + halfGapWhite && sample.avgS < satLimitWhite) {
+          grid[sample.row][sample.col] = StoneColor.white;
+          debug.whiteCount++;
+        } else if (sample.avgV < modeV - halfGapBlack && sample.avgS < satLimitBlack) {
           grid[sample.row][sample.col] = StoneColor.black;
           debug.blackCount++;
         } else {
           debug.emptyCount++;
         }
-      } else if (sample.avgV > thresholdBW && sample.avgS < satLimitWhite) {
-        grid[sample.row][sample.col] = StoneColor.white;
-        debug.whiteCount++;
       } else {
         debug.emptyCount++;
       }
