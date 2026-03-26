@@ -962,6 +962,55 @@ class BoardRecognition {
     return clusters;
   }
 
+  /// Otsu's method：找到最佳門檻將一維數值分成兩群
+  /// 最大化 inter-class variance → 自適應，不需硬編碼參數
+  double _otsuThreshold(List<double> values) {
+    if (values.length < 2) return values.isEmpty ? 0 : values[0];
+
+    final sorted = List<double>.from(values)..sort();
+    final lo = sorted.first;
+    final hi = sorted.last;
+    if (hi - lo < 1e-6) return lo;
+
+    const nBins = 50;
+    final binWidth = (hi - lo) / nBins;
+    final hist = List.filled(nBins, 0);
+    for (final v in values) {
+      final bin = ((v - lo) / binWidth).floor().clamp(0, nBins - 1);
+      hist[bin]++;
+    }
+
+    final total = values.length;
+    var sumAll = 0.0;
+    for (int i = 0; i < nBins; i++) {
+      sumAll += i * hist[i];
+    }
+
+    var bestBin = 0;
+    var bestVariance = 0.0;
+    var w0 = 0;
+    var sum0 = 0.0;
+
+    for (int i = 0; i < nBins; i++) {
+      w0 += hist[i];
+      if (w0 == 0) continue;
+      final w1 = total - w0;
+      if (w1 == 0) break;
+
+      sum0 += i * hist[i];
+      final mean0 = sum0 / w0;
+      final mean1 = (sumAll - sum0) / w1;
+
+      final variance = w0.toDouble() * w1 * (mean0 - mean1) * (mean0 - mean1);
+      if (variance > bestVariance) {
+        bestVariance = variance;
+        bestBin = i;
+      }
+    }
+
+    return lo + (bestBin + 1) * binWidth;
+  }
+
   // ============================================================
   // 步驟 3：棋子偵測
   // ============================================================
@@ -1068,85 +1117,106 @@ class BoardRecognition {
     final boardMedianS =
         sortedS.isNotEmpty ? sortedS[sortedS.length ~/ 2] : 0.0;
 
-    // === Mode-based 自適應閾值 ===
-    const binSize = 8;
-    final bins = List.filled(256 ~/ binSize + 1, 0);
-    for (final v in vValues) {
-      bins[v.toInt() ~/ binSize]++;
-    }
-    var maxBin = 0;
-    var maxCount = 0;
-    for (int i = 0; i < bins.length; i++) {
-      if (bins[i] > maxCount) {
-        maxCount = bins[i];
-        maxBin = i;
+    // === Step 1：Otsu on stdV — 分離棋子（均勻表面）vs 空交叉點（有格線）===
+    final stdVValues = validSamples.map((s) => s.stdV).toList();
+    final stdVThreshold = _otsuThreshold(stdVValues);
+
+    // 飽和度上限：棋子（黑/白）飽和度低於棋盤底色
+    final satLimit = max(boardMedianS * 2.0, 55.0);
+    debug.satLimitBlack = satLimit;
+    debug.satLimitWhite = satLimit;
+
+    // 收集棋子候選：表面均勻 + 飽和度合理
+    final stoneCandidates = <_IntersectionSample>[];
+    for (final s in validSamples) {
+      if (s.stdV < stdVThreshold && s.avgS < satLimit) {
+        stoneCandidates.add(s);
       }
     }
-    final modeV = (maxBin * binSize + binSize / 2).toDouble();
-    debug.clusterCenters = [modeV];
 
-    // 根據實際 V range 縮放門檻：螢幕拍照對比度低，gap 要跟著縮小
-    final vRange = maxV - minV;
-    final scaleFactor = (vRange / 180.0).clamp(0.35, 1.0);
+    _log('[BoardRecognition] stdV 分群: threshold=${stdVThreshold.toStringAsFixed(1)}, '
+        '棋子候選=${stoneCandidates.length}/${validSamples.length}');
 
-    var thresholdBB = modeV - 50.0 * scaleFactor;
-    var thresholdBW = modeV + 25.0 * scaleFactor;
-    thresholdBB = max(thresholdBB, 35.0);
-    thresholdBW = min(thresholdBW, 230.0);
+    // === Step 2：V 值分群 — 分離黑子和白子 ===
+    if (stoneCandidates.length >= 2) {
+      final stoneVs = stoneCandidates.map((s) => s.avgV).toList();
+      final vThreshold = _otsuThreshold(stoneVs);
 
-    debug.thresholdBlackBoard = thresholdBB;
-    debug.thresholdBoardWhite = thresholdBW;
+      // 驗證是否真的有兩種顏色
+      final lowerVs = stoneVs.where((v) => v < vThreshold).toList();
+      final upperVs = stoneVs.where((v) => v >= vThreshold).toList();
 
-    final satLimitBlack = max(boardMedianS * 2.5, 60.0);
-    final satLimitWhite = max(boardMedianS * 1.5, 40.0);
-    debug.satLimitBlack = satLimitBlack;
-    debug.satLimitWhite = satLimitWhite;
+      double mean(List<double> vals) =>
+          vals.isEmpty ? 0 : vals.reduce((a, b) => a + b) / vals.length;
 
-    // stdV 統計：棋子表面均勻，stdV 低；空交叉點有格線，stdV 高
-    final sortedStdV = validSamples.map((s) => s.stdV).toList()..sort();
-    final medianStdV = sortedStdV[sortedStdV.length ~/ 2];
-    final uniformThreshold = medianStdV * 0.75;
+      final lowerMean = mean(lowerVs);
+      final upperMean = mean(upperVs);
+      final hasTwoColors =
+          lowerVs.isNotEmpty && upperVs.isNotEmpty && (upperMean - lowerMean) > 15;
 
-    _log('[BoardRecognition] vRange=${vRange.toStringAsFixed(0)}, scale=${scaleFactor.toStringAsFixed(2)}, medianStdV=${medianStdV.toStringAsFixed(1)}');
+      _log('[BoardRecognition] V 分群: threshold=${vThreshold.toStringAsFixed(1)}, '
+          'lower=${lowerVs.length}(mean=${lowerMean.toStringAsFixed(0)}), '
+          'upper=${upperVs.length}(mean=${upperMean.toStringAsFixed(0)}), '
+          'twoColors=$hasTwoColors');
 
-    // === 分類 ===
-    for (final sample in samples) {
-      if (sample.avgV < 0) {
-        debug.emptyCount++;
-        continue;
-      }
+      // 計算棋盤底色 V（用非棋子的 validSamples 的 V 中位數）
+      final boardVs = validSamples
+          .where((s) => s.stdV >= stdVThreshold || s.avgS >= satLimit)
+          .map((s) => s.avgV)
+          .toList()
+        ..sort();
+      final boardMedianV = boardVs.isNotEmpty
+          ? boardVs[boardVs.length ~/ 2]
+          : (minV + maxV) / 2;
 
-      final isUniform = sample.stdV < uniformThreshold;
+      debug.clusterCenters = [vThreshold];
+      debug.thresholdBlackBoard = vThreshold;
+      debug.thresholdBoardWhite = vThreshold;
 
-      // 主要判定：超過門檻直接分類
-      if (sample.avgV < thresholdBB && sample.avgS < satLimitBlack) {
-        grid[sample.row][sample.col] = StoneColor.black;
-        debug.blackCount++;
-      } else if (sample.avgV > thresholdBW && sample.avgS < satLimitWhite) {
-        grid[sample.row][sample.col] = StoneColor.white;
-        debug.whiteCount++;
-      } else if (isUniform) {
-        // 邊界案例：未過門檻但表面均勻 → 用 stdV 輔助判定
-        // 均勻 + 明顯偏亮 → 可能是白子
-        // 均勻 + 明顯偏暗 → 可能是黑子
-        final halfGapWhite = (thresholdBW - modeV) * 0.3;
-        final halfGapBlack = (modeV - thresholdBB) * 0.3;
-        if (sample.avgV > modeV + halfGapWhite && sample.avgS < satLimitWhite) {
-          grid[sample.row][sample.col] = StoneColor.white;
-          debug.whiteCount++;
-        } else if (sample.avgV < modeV - halfGapBlack && sample.avgS < satLimitBlack) {
-          grid[sample.row][sample.col] = StoneColor.black;
-          debug.blackCount++;
+      for (final s in stoneCandidates) {
+        if (hasTwoColors) {
+          if (s.avgV < vThreshold) {
+            grid[s.row][s.col] = StoneColor.black;
+            debug.blackCount++;
+          } else {
+            grid[s.row][s.col] = StoneColor.white;
+            debug.whiteCount++;
+          }
         } else {
-          debug.emptyCount++;
+          // 只有一種顏色：跟棋盤底色比較
+          if (mean(stoneVs) < boardMedianV) {
+            grid[s.row][s.col] = StoneColor.black;
+            debug.blackCount++;
+          } else {
+            grid[s.row][s.col] = StoneColor.white;
+            debug.whiteCount++;
+          }
         }
+      }
+    } else if (stoneCandidates.length == 1) {
+      // 計算棋盤底色 V
+      final boardVs = validSamples
+          .where((s) => s.stdV >= stdVThreshold)
+          .map((s) => s.avgV)
+          .toList()
+        ..sort();
+      final boardMedianV = boardVs.isNotEmpty
+          ? boardVs[boardVs.length ~/ 2]
+          : (minV + maxV) / 2;
+
+      final s = stoneCandidates[0];
+      if (s.avgV < boardMedianV) {
+        grid[s.row][s.col] = StoneColor.black;
+        debug.blackCount++;
       } else {
-        debug.emptyCount++;
+        grid[s.row][s.col] = StoneColor.white;
+        debug.whiteCount++;
       }
     }
+
+    debug.emptyCount = rows * cols - debug.blackCount - debug.whiteCount;
 
     _log('[BoardRecognition] 棋子: 黑=${debug.blackCount}, 白=${debug.whiteCount}, 空=${debug.emptyCount}');
-    _log('[BoardRecognition] modeV=${modeV.toStringAsFixed(0)}, BB<${thresholdBB.toStringAsFixed(0)}, BW>${thresholdBW.toStringAsFixed(0)}');
 
     // 邊緣分析結果寫入 debug info
     debug.isPartialBoard = _isPartialBoard;
