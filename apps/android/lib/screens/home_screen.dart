@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'camera_screen.dart';
 import 'result_screen.dart';
 
 class HomeScreen extends StatelessWidget {
@@ -44,10 +45,22 @@ class HomeScreen extends StatelessWidget {
             ),
             const SizedBox(height: 48),
             FilledButton.icon(
-              onPressed: () => _pickImage(context, ImageSource.camera),
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const CameraScreen()),
+              ),
               icon: const Icon(Icons.camera_alt),
-              label: const Text('拍照辨識'),
+              label: const Text('相機預覽拍照'),
               style: FilledButton.styleFrom(
+                minimumSize: const Size(200, 48),
+              ),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: () => _pickImage(context, ImageSource.camera),
+              icon: const Icon(Icons.photo_camera),
+              label: const Text('快速拍照'),
+              style: OutlinedButton.styleFrom(
                 minimumSize: const Size(200, 48),
               ),
             ),
