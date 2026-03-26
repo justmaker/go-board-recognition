@@ -2,7 +2,7 @@ name: board_scanner
 description: "圍棋棋盤辨識驗證工具 — 拍照/選圖 → 辨識 → debug overlay"
 publish_to: 'none'
 
-version: 0.1.0+1
+version: 0.1.0-mc.1+1
 
 environment:
   sdk: ^3.6.2

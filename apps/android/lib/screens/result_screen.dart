@@ -17,6 +17,8 @@ class _ResultScreenState extends State<ResultScreen> {
   String? _error;
   bool _loading = true;
   bool _showDebugOverlay = true;
+  bool _editMode = false;
+  BoardState? _editableBoard;
   final List<String> _logs = [];
 
   @override
@@ -56,12 +58,23 @@ class _ResultScreenState extends State<ResultScreen> {
       appBar: AppBar(
         title: const Text('辨識結果'),
         actions: [
-          if (_result != null)
+          if (_result != null) ...[
+            IconButton(
+              icon: Icon(_editMode ? Icons.edit_off : Icons.edit),
+              onPressed: () => setState(() {
+                _editMode = !_editMode;
+                if (_editMode && _editableBoard == null) {
+                  _editableBoard = _result!.boardState;
+                }
+              }),
+              tooltip: '手動修正',
+            ),
             IconButton(
               icon: Icon(_showDebugOverlay ? Icons.bug_report : Icons.bug_report_outlined),
               onPressed: () => setState(() => _showDebugOverlay = !_showDebugOverlay),
               tooltip: 'Debug overlay',
             ),
+          ],
         ],
       ),
       body: _loading
@@ -90,9 +103,31 @@ class _ResultScreenState extends State<ResultScreen> {
     );
   }
 
+  void _handleBoardTap(TapDownDetails details, Size boardSize, BoardState board) {
+    final padding = boardSize.shortestSide * 0.04;
+    final cellW = (boardSize.width - padding * 2) / (board.cols - 1);
+    final cellH = (boardSize.height - padding * 2) / (board.rows - 1);
+
+    final col = ((details.localPosition.dx - padding) / cellW).round();
+    final row = ((details.localPosition.dy - padding) / cellH).round();
+
+    if (row < 0 || row >= board.rows || col < 0 || col >= board.cols) return;
+
+    final current = board.getStone(row, col);
+    final next = switch (current) {
+      StoneColor.empty => StoneColor.black,
+      StoneColor.black => StoneColor.white,
+      StoneColor.white => StoneColor.empty,
+    };
+
+    setState(() {
+      _editableBoard = board.setStone(row, col, next);
+    });
+  }
+
   Widget _buildResult() {
     final result = _result!;
-    final board = result.boardState;
+    final board = _editMode ? (_editableBoard ?? result.boardState) : result.boardState;
     final debug = result.debugInfo;
 
     return SingleChildScrollView(
@@ -122,11 +157,29 @@ class _ResultScreenState extends State<ResultScreen> {
               aspectRatio: board.cols / board.rows,
               child: Padding(
                 padding: const EdgeInsets.all(16),
-                child: CustomPaint(
-                  painter: DebugBoardPainter(boardState: board),
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final boardSize = Size(constraints.maxWidth, constraints.maxWidth * board.rows / board.cols);
+                    return GestureDetector(
+                      onTapDown: _editMode
+                          ? (details) => _handleBoardTap(details, boardSize, board)
+                          : null,
+                      child: CustomPaint(
+                        painter: DebugBoardPainter(boardState: board),
+                      ),
+                    );
+                  },
                 ),
               ),
             ),
+            if (_editMode)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Text(
+                  '點擊交叉點修正：空 → 黑 → 白 → 空',
+                  style: TextStyle(color: Colors.orange[800], fontSize: 13),
+                ),
+              ),
           ],
 
           // Debug info
