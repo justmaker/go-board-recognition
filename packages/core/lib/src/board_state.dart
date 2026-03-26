@@ -34,49 +34,72 @@ class BoardPosition {
   String toString() => '($row, $col)';
 }
 
-/// 棋盤狀態資料模型，支援任意大小（9x9, 13x13, 19x19）
+/// 棋盤狀態資料模型
+///
+/// 完整棋盤: rows == cols (9x9, 13x13, 19x19)
+/// 局部棋盤: rows 和 cols 可能不同
 class BoardState {
-  final int boardSize;
+  final int rows;
+  final int cols;
   final List<List<StoneColor>> grid;
   final StoneColor nextPlayer;
   final double komi;
 
+  /// 是否為局部盤面（有邊被裁切）
+  final bool isPartial;
+
+  /// 四邊是否為真實棋盤邊（top, bottom, left, right）
+  final List<bool> realEdges;
+
+  /// 向後相容：正方形棋盤回傳 rows
+  int get boardSize => rows;
+
   BoardState({
-    required this.boardSize,
+    int? boardSize,
+    int? rows,
+    int? cols,
     List<List<StoneColor>>? grid,
     this.nextPlayer = StoneColor.black,
     this.komi = 7.5,
-  }) : grid = grid ??
+    this.isPartial = false,
+    List<bool>? realEdges,
+  })  : rows = rows ?? boardSize ?? 19,
+        cols = cols ?? boardSize ?? 19,
+        realEdges = realEdges ?? const [true, true, true, true],
+        grid = grid ??
             List.generate(
-              boardSize,
-              (_) => List.filled(boardSize, StoneColor.empty),
+              rows ?? boardSize ?? 19,
+              (_) => List.filled(cols ?? boardSize ?? 19, StoneColor.empty),
             );
 
   /// 取得指定位置的棋子顏色
   StoneColor getStone(int row, int col) {
-    if (row < 0 || row >= boardSize || col < 0 || col >= boardSize) {
+    if (row < 0 || row >= rows || col < 0 || col >= cols) {
       throw RangeError(
-          'Position ($row, $col) out of bounds for $boardSize x $boardSize board');
+          'Position ($row, $col) out of bounds for $rows x $cols board');
     }
     return grid[row][col];
   }
 
   /// 設定指定位置的棋子，回傳新的 BoardState（immutable）
   BoardState setStone(int row, int col, StoneColor color) {
-    if (row < 0 || row >= boardSize || col < 0 || col >= boardSize) {
+    if (row < 0 || row >= rows || col < 0 || col >= cols) {
       throw RangeError(
-          'Position ($row, $col) out of bounds for $boardSize x $boardSize board');
+          'Position ($row, $col) out of bounds for $rows x $cols board');
     }
     final newGrid = List.generate(
-      boardSize,
+      rows,
       (r) => List<StoneColor>.from(grid[r]),
     );
     newGrid[row][col] = color;
     return BoardState(
-      boardSize: boardSize,
+      rows: rows,
+      cols: cols,
       grid: newGrid,
       nextPlayer: nextPlayer,
       komi: komi,
+      isPartial: isPartial,
+      realEdges: realEdges,
     );
   }
 
@@ -113,9 +136,10 @@ class BoardState {
   @override
   String toString() {
     final sb = StringBuffer();
-    sb.writeln('BoardState ${boardSize}x$boardSize, next: $nextPlayer');
-    for (int r = 0; r < boardSize; r++) {
-      for (int c = 0; c < boardSize; c++) {
+    final label = isPartial ? '${rows}x$cols (局部)' : '${rows}x$cols';
+    sb.writeln('BoardState $label, next: $nextPlayer');
+    for (int r = 0; r < rows; r++) {
+      for (int c = 0; c < cols; c++) {
         switch (grid[r][c]) {
           case StoneColor.empty:
             sb.write('.');

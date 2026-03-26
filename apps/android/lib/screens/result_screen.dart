@@ -111,13 +111,15 @@ class _ResultScreenState extends State<ResultScreen> {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Text(
-                '辨識結果: ${board.boardSize}x${board.boardSize}  黑=${board.blackCount}  白=${board.whiteCount}',
+                '辨識結果: ${board.rows}x${board.cols}'
+                '${board.isPartial ? ' (局部)' : ''}'
+                '  黑=${board.blackCount}  白=${board.whiteCount}',
                 style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
               ),
             ),
             const SizedBox(height: 8),
             AspectRatio(
-              aspectRatio: 1,
+              aspectRatio: board.cols / board.rows,
               child: Padding(
                 padding: const EdgeInsets.all(16),
                 child: CustomPaint(

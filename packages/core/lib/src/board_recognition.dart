@@ -48,6 +48,13 @@ class BoardRecognition {
   /// 是否保留 warped 影像在結果中（用於 debug overlay）
   bool keepWarpedImage;
 
+  // 邊緣分析結果（由 _detectGridLines 設定，供 _detectStones 讀取）
+  bool _isPartialBoard = false;
+  bool _isTopEdge = true;
+  bool _isBottomEdge = true;
+  bool _isLeftEdge = true;
+  bool _isRightEdge = true;
+
   BoardRecognition({this.onLog, this.keepWarpedImage = false});
 
   void _log(String msg) => onLog?.call(msg);
@@ -63,14 +70,20 @@ class BoardRecognition {
       // 1. 偵測棋盤邊界並進行透視校正
       final warped = _findAndWarpBoard(img);
 
-      // 2. 偵測格線並推斷棋盤大小（均勻間距）
-      final (boardSize, intersections) = _detectGridLines(warped);
+      // 2. 偵測格線並推斷棋盤大小（含邊緣分析）
+      final (rows, cols, intersections) = _detectGridLines(warped);
 
       // 3. 在每個交叉點偵測棋子
-      final grid = _detectStones(warped, boardSize, intersections);
+      final grid = _detectStones(warped, rows, cols, intersections);
 
       final result = RecognitionResult(
-        boardState: BoardState(boardSize: boardSize, grid: grid),
+        boardState: BoardState(
+          rows: rows,
+          cols: cols,
+          grid: grid,
+          isPartial: _isPartialBoard,
+          realEdges: [_isTopEdge, _isBottomEdge, _isLeftEdge, _isRightEdge],
+        ),
         debugInfo: lastDebugInfo ?? RecognitionDebugInfo(),
         warpedImage: keepWarpedImage ? warped.clone() : null,
       );
@@ -85,11 +98,17 @@ class BoardRecognition {
   /// 從已載入的 cv.Mat 辨識棋盤狀態
   Future<RecognitionResult> recognizeFromMat(cv.Mat img) async {
     final warped = _findAndWarpBoard(img);
-    final (boardSize, intersections) = _detectGridLines(warped);
-    final grid = _detectStones(warped, boardSize, intersections);
+    final (rows, cols, intersections) = _detectGridLines(warped);
+    final grid = _detectStones(warped, rows, cols, intersections);
 
     final result = RecognitionResult(
-      boardState: BoardState(boardSize: boardSize, grid: grid),
+      boardState: BoardState(
+        rows: rows,
+        cols: cols,
+        grid: grid,
+        isPartial: _isPartialBoard,
+        realEdges: [_isTopEdge, _isBottomEdge, _isLeftEdge, _isRightEdge],
+      ),
       debugInfo: lastDebugInfo ?? RecognitionDebugInfo(),
       warpedImage: keepWarpedImage ? warped.clone() : null,
     );
@@ -398,7 +417,7 @@ class BoardRecognition {
   // 步驟 2：格線偵測（暴力搜尋最佳間距）
   // ============================================================
 
-  (int, List<List<cv.Point2f>>) _detectGridLines(cv.Mat warped) {
+  (int, int, List<List<cv.Point2f>>) _detectGridLines(cv.Mat warped) {
     final size = warped.rows;
 
     // 1. 初步 Hough 偵測用於計算旋轉校正
@@ -562,38 +581,88 @@ class BoardRecognition {
     final vLines =
         _generateGridFromSpacing(vPhase, vSpacing, size.toDouble());
 
-    final bestSpacing = hInl >= vInl ? hSpacing : vSpacing;
-    final sizeRatio = size / bestSpacing;
-    final int boardSize;
-    if (sizeRatio < 11.5) {
-      boardSize = 9;
-    } else if (sizeRatio < 17) {
-      boardSize = 13;
+    // === 邊緣留白分析：判斷是完整棋盤還是局部盤面 ===
+    final spacing = hInl >= vInl ? hSpacing : vSpacing;
+
+    final topMargin = hLines.first;
+    final bottomMargin = size - hLines.last;
+    final leftMargin = vLines.first;
+    final rightMargin = size - vLines.last;
+
+    // 邊距 > 間距 * 0.3 → 真正的棋盤邊（有外圍留白）
+    const realEdgeRatio = 0.3;
+
+    _isTopEdge = topMargin > spacing * realEdgeRatio;
+    _isBottomEdge = bottomMargin > spacing * realEdgeRatio;
+    _isLeftEdge = leftMargin > spacing * realEdgeRatio;
+    _isRightEdge = rightMargin > spacing * realEdgeRatio;
+
+    final allEdgesReal =
+        _isTopEdge && _isBottomEdge && _isLeftEdge && _isRightEdge;
+
+    int rows;
+    int cols;
+
+    if (allEdgesReal) {
+      // 完整棋盤：snap 到標準大小 9/13/19
+      _isPartialBoard = false;
+      final hRatio = size / hSpacing;
+      final vRatio = size / vSpacing;
+
+      int snapToStandard(double ratio) {
+        if (ratio < 11.5) return 9;
+        if (ratio < 17) return 13;
+        return 19;
+      }
+
+      rows = snapToStandard(hRatio);
+      cols = snapToStandard(vRatio);
     } else {
-      boardSize = 19;
+      // 局部盤面：直接使用偵測到的格線數
+      _isPartialBoard = true;
+      rows = hLines.length;
+      cols = vLines.length;
     }
 
-    final hTrimmed =
-        _trimToSize(hLines, boardSize, hSpacing, size.toDouble());
-    final vTrimmed =
-        _trimToSize(vLines, boardSize, vSpacing, size.toDouble());
+    _log('[BoardRecognition] 邊距: top=${topMargin.toStringAsFixed(1)}, '
+        'bottom=${bottomMargin.toStringAsFixed(1)}, '
+        'left=${leftMargin.toStringAsFixed(1)}, '
+        'right=${rightMargin.toStringAsFixed(1)} '
+        '(spacing=${spacing.toStringAsFixed(1)})');
+    _log('[BoardRecognition] 邊緣: top=${_isTopEdge}, bottom=${_isBottomEdge}, '
+        'left=${_isLeftEdge}, right=${_isRightEdge} '
+        '→ partial=$_isPartialBoard');
 
-    final hFinal = _refineToProjection(hTrimmed, hSmooth, hSpacing);
-    final vFinal = _refineToProjection(vTrimmed, vSmooth, vSpacing);
+    final List<double> hFinal;
+    final List<double> vFinal;
+
+    if (_isPartialBoard) {
+      // 局部盤面：用偵測到的格線，微調對齊 projection
+      hFinal = _refineToProjection(hLines, hSmooth, hSpacing);
+      vFinal = _refineToProjection(vLines, vSmooth, vSpacing);
+    } else {
+      // 完整棋盤：trimToSize 再 refine
+      final hTrimmed =
+          _trimToSize(hLines, rows, hSpacing, size.toDouble());
+      final vTrimmed =
+          _trimToSize(vLines, cols, vSpacing, size.toDouble());
+      hFinal = _refineToProjection(hTrimmed, hSmooth, hSpacing);
+      vFinal = _refineToProjection(vTrimmed, vSmooth, vSpacing);
+    }
 
     final intersections = <List<cv.Point2f>>[];
-    for (int r = 0; r < boardSize; r++) {
+    for (int r = 0; r < rows; r++) {
       final row = <cv.Point2f>[];
-      for (int c = 0; c < boardSize; c++) {
+      for (int c = 0; c < cols; c++) {
         row.add(cv.Point2f(vFinal[c], hFinal[r]));
       }
       intersections.add(row);
     }
 
     _log('[BoardRecognition] 間距: H=${hSpacing.toStringAsFixed(1)} (inl=$hInl), V=${vSpacing.toStringAsFixed(1)} (inl=$vInl)');
-    _log('[BoardRecognition] 格線: ${hLines.length}x${vLines.length}, ratio=${sizeRatio.toStringAsFixed(1)} → ${boardSize}x$boardSize');
+    _log('[BoardRecognition] 格線: ${rows}x$cols (partial=$_isPartialBoard)');
 
-    return (boardSize, intersections);
+    return (rows, cols, intersections);
   }
 
   (double, int) _findBestPhase(List<double> positions, double spacing) {
@@ -882,23 +951,26 @@ class BoardRecognition {
 
   List<List<StoneColor>> _detectStones(
     cv.Mat warped,
-    int boardSize,
+    int rows,
+    int cols,
     List<List<cv.Point2f>> intersections,
   ) {
     final debug = RecognitionDebugInfo();
-    debug.detectedBoardSize = boardSize;
+    debug.detectedBoardSize = max(rows, cols);
+    debug.detectedRows = rows;
+    debug.detectedCols = cols;
 
     final hsv = cv.cvtColor(warped, cv.COLOR_BGR2HSV);
     final grid = List.generate(
-      boardSize,
-      (_) => List.filled(boardSize, StoneColor.empty),
+      rows,
+      (_) => List.filled(cols, StoneColor.empty),
     );
 
-    final sampleRadius = (warped.cols / boardSize * 0.35).round();
+    final sampleRadius = (warped.cols / cols * 0.35).round();
     final samples = <_IntersectionSample>[];
 
-    for (int r = 0; r < boardSize; r++) {
-      for (int c = 0; c < boardSize; c++) {
+    for (int r = 0; r < rows; r++) {
+      for (int c = 0; c < cols; c++) {
         final pt = intersections[r][c];
         final x = pt.x.round();
         final y = pt.y.round();
@@ -1050,6 +1122,13 @@ class BoardRecognition {
 
     _log('[BoardRecognition] 棋子: 黑=${debug.blackCount}, 白=${debug.whiteCount}, 空=${debug.emptyCount}');
     _log('[BoardRecognition] modeV=${modeV.toStringAsFixed(0)}, BB<${thresholdBB.toStringAsFixed(0)}, BW>${thresholdBW.toStringAsFixed(0)}');
+
+    // 邊緣分析結果寫入 debug info
+    debug.isPartialBoard = _isPartialBoard;
+    debug.isTopEdge = _isTopEdge;
+    debug.isBottomEdge = _isBottomEdge;
+    debug.isLeftEdge = _isLeftEdge;
+    debug.isRightEdge = _isRightEdge;
 
     lastDebugInfo = debug;
     return grid;

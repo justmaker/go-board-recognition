@@ -3,6 +3,7 @@ import 'package:go_board_core/go_board_core.dart';
 
 /// 棋盤辨識結果的 debug 繪製器
 /// 顯示格線、星位、辨識到的黑白棋子
+/// 支援非正方形局部盤面 + 邊緣標示
 class DebugBoardPainter extends CustomPainter {
   final BoardState boardState;
 
@@ -10,14 +11,15 @@ class DebugBoardPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final n = boardState.boardSize;
-    if (n < 2) return;
+    final rows = boardState.rows;
+    final cols = boardState.cols;
+    if (rows < 2 || cols < 2) return;
 
-    final padding = size.width * 0.04;
+    final padding = size.shortestSide * 0.04;
     final boardWidth = size.width - padding * 2;
     final boardHeight = size.height - padding * 2;
-    final cellW = boardWidth / (n - 1);
-    final cellH = boardHeight / (n - 1);
+    final cellW = boardWidth / (cols - 1);
+    final cellH = boardHeight / (rows - 1);
     final stoneRadius = (cellW < cellH ? cellW : cellH) * 0.42;
 
     // 棋盤底色
@@ -29,16 +31,16 @@ class DebugBoardPainter extends CustomPainter {
       ..color = Colors.black
       ..strokeWidth = 1.0;
 
-    for (int i = 0; i < n; i++) {
-      final x = padding + i * cellW;
+    for (int c = 0; c < cols; c++) {
+      final x = padding + c * cellW;
       canvas.drawLine(
         Offset(x, padding),
         Offset(x, padding + boardHeight),
         linePaint,
       );
     }
-    for (int i = 0; i < n; i++) {
-      final y = padding + i * cellH;
+    for (int r = 0; r < rows; r++) {
+      final y = padding + r * cellH;
       canvas.drawLine(
         Offset(padding, y),
         Offset(padding + boardWidth, y),
@@ -46,16 +48,55 @@ class DebugBoardPainter extends CustomPainter {
       );
     }
 
-    // 星位
-    final starPoints = _getStarPoints(n);
-    final starPaint = Paint()..color = Colors.black;
-    final starRadius = stoneRadius * 0.2;
-    for (final sp in starPoints) {
-      canvas.drawCircle(
-        Offset(padding + sp.col * cellW, padding + sp.row * cellH),
-        starRadius,
-        starPaint,
-      );
+    // 局部盤面邊緣標示：非真實邊用虛線標示
+    if (boardState.isPartial) {
+      final edgePaint = Paint()
+        ..color = Colors.red.withValues(alpha: 0.6)
+        ..strokeWidth = 3.0
+        ..style = PaintingStyle.stroke;
+
+      final edges = boardState.realEdges;
+      // [top, bottom, left, right] — 畫非真實邊
+      if (!edges[0]) {
+        // top is cropped
+        canvas.drawLine(
+            Offset(0, padding * 0.5), Offset(size.width, padding * 0.5), edgePaint);
+      }
+      if (!edges[1]) {
+        // bottom is cropped
+        canvas.drawLine(
+            Offset(0, size.height - padding * 0.5),
+            Offset(size.width, size.height - padding * 0.5),
+            edgePaint);
+      }
+      if (!edges[2]) {
+        // left is cropped
+        canvas.drawLine(
+            Offset(padding * 0.5, 0), Offset(padding * 0.5, size.height), edgePaint);
+      }
+      if (!edges[3]) {
+        // right is cropped
+        canvas.drawLine(
+            Offset(size.width - padding * 0.5, 0),
+            Offset(size.width - padding * 0.5, size.height),
+            edgePaint);
+      }
+    }
+
+    // 星位（只有完整棋盤才畫）
+    if (!boardState.isPartial) {
+      final starPoints = _getStarPoints(rows);
+      final starPaint = Paint()..color = Colors.black;
+      final starRadius = stoneRadius * 0.2;
+      for (final sp in starPoints) {
+        if (sp.row < rows && sp.col < cols) {
+          canvas.drawCircle(
+            Offset(padding + sp.col * cellW, padding + sp.row * cellH),
+            starRadius,
+            starPaint,
+          );
+        }
+      }
     }
 
     // 棋子
@@ -66,8 +107,8 @@ class DebugBoardPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.5;
 
-    for (int r = 0; r < n; r++) {
-      for (int c = 0; c < n; c++) {
+    for (int r = 0; r < rows; r++) {
+      for (int c = 0; c < cols; c++) {
         final stone = boardState.getStone(r, c);
         if (stone == StoneColor.empty) continue;
 
@@ -85,13 +126,13 @@ class DebugBoardPainter extends CustomPainter {
     // 座標標籤
     final labelStyle = TextStyle(
       color: Colors.black54,
-      fontSize: cellW * 0.3,
+      fontSize: (cellW < cellH ? cellW : cellH) * 0.3,
     );
     final tp = TextPainter(textDirection: TextDirection.ltr);
 
     // 列號（左側）
-    for (int r = 0; r < n; r++) {
-      tp.text = TextSpan(text: '${n - r}', style: labelStyle);
+    for (int r = 0; r < rows; r++) {
+      tp.text = TextSpan(text: '${rows - r}', style: labelStyle);
       tp.layout();
       tp.paint(
         canvas,
@@ -100,7 +141,7 @@ class DebugBoardPainter extends CustomPainter {
     }
 
     // 行號（下方），跳過 I
-    for (int c = 0; c < n; c++) {
+    for (int c = 0; c < cols; c++) {
       final letter = String.fromCharCode(
           65 + c + (c >= 8 ? 1 : 0)); // A-H, J-T (跳過 I)
       tp.text = TextSpan(text: letter, style: labelStyle);
