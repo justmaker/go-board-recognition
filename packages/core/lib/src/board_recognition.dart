@@ -3,7 +3,8 @@ import 'package:opencv_dart/opencv_dart.dart' as cv;
 import 'board_state.dart';
 import 'recognition_debug_info.dart';
 
-/// 交叉點取樣資料
+/// 交叉點取樣資料（HoughCircles fallback 用）
+// ignore: unused_element
 class _IntersectionSample {
   final int row;
   final int col;
@@ -962,8 +963,9 @@ class BoardRecognition {
     return clusters;
   }
 
-  /// Otsu's method：找到最佳門檻將一維數值分成兩群
+  /// Otsu's method：找到最佳門檻將一維數值分成兩群（HoughCircles fallback 用）
   /// 最大化 inter-class variance → 自適應，不需硬編碼參數
+  // ignore: unused_element
   double _otsuThreshold(List<double> values) {
     if (values.length < 2) return values.isEmpty ? 0 : values[0];
 
@@ -1026,164 +1028,129 @@ class BoardRecognition {
     debug.detectedRows = rows;
     debug.detectedCols = cols;
 
-    final hsv = cv.cvtColor(warped, cv.COLOR_BGR2HSV);
     final grid = List.generate(
       rows,
       (_) => List.filled(cols, StoneColor.empty),
     );
 
-    final sampleRadius = (warped.cols / cols * 0.35).round();
-    final samples = <_IntersectionSample>[];
+    // === 計算格線間距（用於 HoughCircles 參數） ===
+    final cellW = cols > 1
+        ? (intersections[0][cols - 1].x - intersections[0][0].x) / (cols - 1)
+        : warped.cols / 10.0;
+    final cellH = rows > 1
+        ? (intersections[rows - 1][0].y - intersections[0][0].y) / (rows - 1)
+        : warped.rows / 10.0;
+    final cellSize = min(cellW, cellH);
+    final stoneRadius = (cellSize * 0.42).round();
 
+    _log('[BoardRecognition] cellSize=${cellSize.toStringAsFixed(1)}, '
+        'stoneRadius=$stoneRadius');
+
+    // === Step 1：HoughCircles 偵測圓形棋子 ===
+    final gray = cv.cvtColor(warped, cv.COLOR_BGR2GRAY);
+    final blurred = cv.gaussianBlur(gray, (5, 5), 1.5);
+
+    final circles = cv.HoughCircles(
+      blurred,
+      cv.HOUGH_GRADIENT,
+      1.0, // dp: 全解析度
+      cellSize * 0.7, // minDist: 棋子間最小距離
+      param1: 80, // Canny 上閾值
+      param2: 25, // 累加器閾值（越低偵測越多）
+      minRadius: max(1, (stoneRadius * 0.5).round()),
+      maxRadius: (stoneRadius * 1.3).round(),
+    );
+
+    gray.dispose();
+    blurred.dispose();
+
+    _log('[BoardRecognition] HoughCircles: 偵測到 ${circles.rows} 個圓');
+
+    // === Step 2：找棋盤底色 V（用全圖灰階中位數近似）===
+    final grayForV = cv.cvtColor(warped, cv.COLOR_BGR2GRAY);
+
+    // 取所有交叉點的 V 值算眾數作為棋盤底色
+    final allVs = <double>[];
     for (int r = 0; r < rows; r++) {
       for (int c = 0; c < cols; c++) {
         final pt = intersections[r][c];
-        final x = pt.x.round();
-        final y = pt.y.round();
+        final x = pt.x.round().clamp(0, warped.cols - 1);
+        final y = pt.y.round().clamp(0, warped.rows - 1);
+        allVs.add(grayForV.atPixel(y, x)[0].toDouble());
+      }
+    }
+    allVs.sort();
+    final boardV = allVs[allVs.length ~/ 2]; // 中位數 = 棋盤底色
 
-        // 局部盤面：裁切邊的最外行/列直接跳過（warp 邊界可能有非棋盤內容）
-        final skipEdge = _isPartialBoard &&
-            ((r == 0 && !_isTopEdge) ||
-             (r == rows - 1 && !_isBottomEdge) ||
-             (c == 0 && !_isLeftEdge) ||
-             (c == cols - 1 && !_isRightEdge));
+    debug.vMin = allVs.first;
+    debug.vMax = allVs.last;
+    debug.clusterCenters = [boardV];
 
-        if (skipEdge ||
-            x < sampleRadius ||
-            x >= warped.cols - sampleRadius ||
-            y < sampleRadius ||
-            y >= warped.rows - sampleRadius) {
-          samples.add(_IntersectionSample(
-            row: r,
-            col: c,
-            avgV: -1.0,
-            avgS: 0.0,
-            stdV: 0.0,
-          ));
-          continue;
-        }
+    _log('[BoardRecognition] boardV=${boardV.toStringAsFixed(0)} '
+        '(range: ${allVs.first.toStringAsFixed(0)}-${allVs.last.toStringAsFixed(0)})');
 
-        var totalV = 0.0;
-        var totalS = 0.0;
-        var totalV2 = 0.0;
-        var sampleCount = 0;
+    // === Step 3：每個偵測到的圓 → 對應到最近的交叉點 → 判斷黑白 ===
+    final matchRadius = cellSize * 0.5; // 圓心必須離交叉點夠近
 
-        for (int dy = -sampleRadius; dy <= sampleRadius; dy++) {
-          for (int dx = -sampleRadius; dx <= sampleRadius; dx++) {
-            final sx = (x + dx).clamp(0, warped.cols - 1);
-            final sy = (y + dy).clamp(0, warped.rows - 1);
-            final pixel = hsv.atPixel(sy, sx);
-            totalS += pixel[1];
-            final v = pixel[2].toDouble();
-            totalV += v;
-            totalV2 += v * v;
-            sampleCount++;
+    for (int i = 0; i < circles.rows; i++) {
+      final circle = circles.at<cv.Vec3f>(i, 0);
+      final cx = circle.val1.toDouble();
+      final cy = circle.val2.toDouble();
+      final cr = circle.val3.toDouble();
+
+      // 找最近的交叉點
+      var bestR = -1;
+      var bestC = -1;
+      var bestDist = double.infinity;
+
+      for (int r = 0; r < rows; r++) {
+        for (int c = 0; c < cols; c++) {
+          final pt = intersections[r][c];
+          final dx = cx - pt.x;
+          final dy = cy - pt.y;
+          final dist = sqrt(dx * dx + dy * dy);
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestR = r;
+            bestC = c;
           }
         }
-
-        final avgV = totalV / sampleCount;
-        final avgS = totalS / sampleCount;
-        final variance = (totalV2 / sampleCount) - (avgV * avgV);
-        final stdV = sqrt(max(0, variance));
-
-        samples.add(_IntersectionSample(
-          row: r,
-          col: c,
-          avgV: avgV,
-          avgS: avgS,
-          stdV: stdV,
-        ));
       }
-    }
-    hsv.dispose();
 
-    // === V/S 值統計 ===
-    final validSamples = samples.where((s) => s.avgV >= 0).toList();
-    if (validSamples.isEmpty) return grid;
+      if (bestR < 0 || bestDist > matchRadius) continue;
+      if (grid[bestR][bestC] != StoneColor.empty) continue; // 已經有棋子了
 
-    final vValues = validSamples.map((s) => s.avgV).toList();
-    final sValues = validSamples.map((s) => s.avgS).toList();
-
-    var minV = 255.0;
-    var maxV = 0.0;
-    for (final v in vValues) {
-      if (v < minV) minV = v;
-      if (v > maxV) maxV = v;
-    }
-    debug.vMin = minV;
-    debug.vMax = maxV;
-
-    final sortedS = List<double>.from(sValues)..sort();
-    final boardMedianS =
-        sortedS.isNotEmpty ? sortedS[sortedS.length ~/ 2] : 0.0;
-
-    // === Step 1：找棋盤底色（V 的眾數）===
-    const binSize = 8;
-    final bins = List.filled(256 ~/ binSize + 1, 0);
-    for (final v in vValues) {
-      bins[v.toInt() ~/ binSize]++;
-    }
-    var maxBin = 0;
-    var maxCount = 0;
-    for (int i = 0; i < bins.length; i++) {
-      if (bins[i] > maxCount) {
-        maxCount = bins[i];
-        maxBin = i;
+      // 取圓心區域的平均亮度判斷黑白
+      final sampleR = max(1, (cr * 0.6).round());
+      var totalGray = 0.0;
+      var count = 0;
+      for (int dy = -sampleR; dy <= sampleR; dy++) {
+        for (int dx = -sampleR; dx <= sampleR; dx++) {
+          if (dx * dx + dy * dy > sampleR * sampleR) continue;
+          final sx = (cx.round() + dx).clamp(0, warped.cols - 1);
+          final sy = (cy.round() + dy).clamp(0, warped.rows - 1);
+          totalGray += grayForV.atPixel(sy, sx)[0].toDouble();
+          count++;
+        }
       }
-    }
-    final boardV = (maxBin * binSize + binSize / 2).toDouble();
+      final avgGray = totalGray / count;
 
-    // stdV 統計（用於輔助驗證）
-    final stdVValues = validSamples.map((s) => s.stdV).toList();
-    final sortedStdV = List<double>.from(stdVValues)..sort();
-    final medianStdV = sortedStdV[sortedStdV.length ~/ 2];
-
-    // 飽和度上限
-    final satLimit = max(boardMedianS * 2.0, 55.0);
-    debug.satLimitBlack = satLimit;
-    debug.satLimitWhite = satLimit;
-
-    _log('[BoardRecognition] boardV=${boardV.toStringAsFixed(0)}, '
-        'medianStdV=${medianStdV.toStringAsFixed(1)}, '
-        'satLimit=${satLimit.toStringAsFixed(0)}');
-
-    // === Step 2：V 距離分群 — 離棋盤底色越遠越可能是棋子 ===
-    // 棋子（黑或白）的 V 值遠離棋盤底色，空交叉點 V 接近底色
-    final distances = validSamples.map((s) => (s.avgV - boardV).abs()).toList();
-    final distThreshold = _otsuThreshold(distances);
-
-    // 收集棋子候選：V 距離夠大 + 飽和度合理
-    // stdV 作為輔助：如果 stdV 特別高（> 2× 中位數），降低信心
-    final stoneCandidates = <_IntersectionSample>[];
-    for (int i = 0; i < validSamples.length; i++) {
-      final s = validSamples[i];
-      final dist = distances[i];
-      final highStdV = s.stdV > medianStdV * 2.0;
-
-      if (dist >= distThreshold && s.avgS < satLimit && !highStdV) {
-        stoneCandidates.add(s);
-      }
-    }
-
-    _log('[BoardRecognition] V距離分群: distThreshold=${distThreshold.toStringAsFixed(1)}, '
-        '棋子候選=${stoneCandidates.length}/${validSamples.length}');
-
-    // === Step 3：黑白分類 — V < boardV → 黑，V > boardV → 白 ===
-    debug.clusterCenters = [boardV];
-    debug.thresholdBlackBoard = boardV - distThreshold;
-    debug.thresholdBoardWhite = boardV + distThreshold;
-
-    for (final s in stoneCandidates) {
-      if (s.avgV < boardV) {
-        grid[s.row][s.col] = StoneColor.black;
+      // 黑白分類：跟棋盤底色比較
+      if (avgGray < boardV) {
+        grid[bestR][bestC] = StoneColor.black;
         debug.blackCount++;
       } else {
-        grid[s.row][s.col] = StoneColor.white;
+        grid[bestR][bestC] = StoneColor.white;
         debug.whiteCount++;
       }
     }
 
+    circles.dispose();
+    grayForV.dispose();
+
     debug.emptyCount = rows * cols - debug.blackCount - debug.whiteCount;
+    debug.thresholdBlackBoard = boardV;
+    debug.thresholdBoardWhite = boardV;
 
     _log('[BoardRecognition] 棋子: 黑=${debug.blackCount}, 白=${debug.whiteCount}, 空=${debug.emptyCount}');
 
