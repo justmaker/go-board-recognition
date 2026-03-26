@@ -2,7 +2,7 @@ name: board_scanner
 description: "圍棋棋盤辨識驗證工具 — 拍照/選圖 → 辨識 → debug overlay"
 publish_to: 'none'
 
-version: 0.1.0+1
+version: 0.1.0-hist.1+1
 
 environment:
   sdk: ^3.6.2
@@ -13,6 +13,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   image_picker: ^1.1.2
   opencv_dart: ^1.3.5
+  path_provider: ^2.1.5
   go_board_core:
     path: ../../packages/core
 
