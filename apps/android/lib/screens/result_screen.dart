@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:go_board_core/go_board_core.dart';
 import '../widgets/debug_board_painter.dart';
 
@@ -25,6 +26,18 @@ class _ResultScreenState extends State<ResultScreen> {
     _recognize();
   }
 
+  /// 將 Flutter asset 解壓到 temp 檔案，回傳 filesystem 路徑
+  Future<String> _extractAsset(String assetPath) async {
+    final data = await rootBundle.load(assetPath);
+    final tempDir = Directory.systemTemp;
+    final fileName = assetPath.split('/').last;
+    final file = File('${tempDir.path}/haar_$fileName');
+    if (!file.existsSync()) {
+      await file.writeAsBytes(data.buffer.asUint8List());
+    }
+    return file.path;
+  }
+
   Future<void> _recognize() async {
     setState(() {
       _loading = true;
@@ -33,9 +46,17 @@ class _ResultScreenState extends State<ResultScreen> {
     });
 
     try {
+      // 解壓 Haar Cascade XML 到 temp
+      final blackPath = await _extractAsset('assets/cascades/blackCascade.xml');
+      final whitePath = await _extractAsset('assets/cascades/whiteCascade.xml');
+
       final recognition = BoardRecognition(
         onLog: (msg) => setState(() => _logs.add(msg)),
         keepWarpedImage: true,
+        cascadePaths: {
+          'black': blackPath,
+          'white': whitePath,
+        },
       );
       final result = await recognition.recognizeFromImage(widget.imagePath);
       setState(() {

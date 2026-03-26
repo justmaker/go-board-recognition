@@ -3,22 +3,6 @@ import 'package:opencv_dart/opencv_dart.dart' as cv;
 import 'board_state.dart';
 import 'recognition_debug_info.dart';
 
-/// 交叉點取樣資料
-class _IntersectionSample {
-  final int row;
-  final int col;
-  final double avgV;
-  final double avgS;
-  final double stdV;
-
-  _IntersectionSample({
-    required this.row,
-    required this.col,
-    required this.avgV,
-    required this.avgS,
-    required this.stdV,
-  });
-}
 
 /// 辨識結果，包含棋盤狀態和除錯資訊
 class RecognitionResult {
@@ -55,7 +39,11 @@ class BoardRecognition {
   bool _isLeftEdge = true;
   bool _isRightEdge = true;
 
-  BoardRecognition({this.onLog, this.keepWarpedImage = false});
+  /// Haar Cascade XML 檔案路徑（需由 app 層提供 filesystem 路徑）
+  /// keys: 'black', 'white'（可選 'empty'）
+  final Map<String, String>? cascadePaths;
+
+  BoardRecognition({this.onLog, this.keepWarpedImage = false, this.cascadePaths});
 
   void _log(String msg) => onLog?.call(msg);
 
@@ -962,54 +950,6 @@ class BoardRecognition {
     return clusters;
   }
 
-  /// Otsu's method：找到最佳門檻將一維數值分成兩群
-  /// 最大化 inter-class variance → 自適應，不需硬編碼參數
-  double _otsuThreshold(List<double> values) {
-    if (values.length < 2) return values.isEmpty ? 0 : values[0];
-
-    final sorted = List<double>.from(values)..sort();
-    final lo = sorted.first;
-    final hi = sorted.last;
-    if (hi - lo < 1e-6) return lo;
-
-    const nBins = 50;
-    final binWidth = (hi - lo) / nBins;
-    final hist = List.filled(nBins, 0);
-    for (final v in values) {
-      final bin = ((v - lo) / binWidth).floor().clamp(0, nBins - 1);
-      hist[bin]++;
-    }
-
-    final total = values.length;
-    var sumAll = 0.0;
-    for (int i = 0; i < nBins; i++) {
-      sumAll += i * hist[i];
-    }
-
-    var bestBin = 0;
-    var bestVariance = 0.0;
-    var w0 = 0;
-    var sum0 = 0.0;
-
-    for (int i = 0; i < nBins; i++) {
-      w0 += hist[i];
-      if (w0 == 0) continue;
-      final w1 = total - w0;
-      if (w1 == 0) break;
-
-      sum0 += i * hist[i];
-      final mean0 = sum0 / w0;
-      final mean1 = (sumAll - sum0) / w1;
-
-      final variance = w0.toDouble() * w1 * (mean0 - mean1) * (mean0 - mean1);
-      if (variance > bestVariance) {
-        bestVariance = variance;
-        bestBin = i;
-      }
-    }
-
-    return lo + (bestBin + 1) * binWidth;
-  }
 
   // ============================================================
   // 步驟 3：棋子偵測
@@ -1026,166 +966,117 @@ class BoardRecognition {
     debug.detectedRows = rows;
     debug.detectedCols = cols;
 
-    final hsv = cv.cvtColor(warped, cv.COLOR_BGR2HSV);
     final grid = List.generate(
       rows,
       (_) => List.filled(cols, StoneColor.empty),
     );
 
-    final sampleRadius = (warped.cols / cols * 0.35).round();
-    final samples = <_IntersectionSample>[];
+    if (cascadePaths == null ||
+        !cascadePaths!.containsKey('black') ||
+        !cascadePaths!.containsKey('white')) {
+      _log('[BoardRecognition] Haar Cascade: 缺少必要的 cascade 檔案路徑');
+      lastDebugInfo = debug;
+      return grid;
+    }
+
+    // 載入分類器
+    final blackClassifier = cv.CascadeClassifier.fromFile(cascadePaths!['black']!);
+    final whiteClassifier = cv.CascadeClassifier.fromFile(cascadePaths!['white']!);
+
+    _log('[BoardRecognition] Haar Cascade: 載入 black/white 分類器');
+
+    // 格線間距（裁切區域大小）
+    final cellW = cols > 1
+        ? (intersections[0][cols - 1].x - intersections[0][0].x) / (cols - 1)
+        : warped.cols / 10.0;
+    final cellH = rows > 1
+        ? (intersections[rows - 1][0].y - intersections[0][0].y) / (rows - 1)
+        : warped.rows / 10.0;
+    final cellSize = min(cellW, cellH);
+    final cropHalf = (cellSize * 0.55).round();
+
+    // 灰階影像（cascade 需要灰階）
+    final gray = cv.cvtColor(warped, cv.COLOR_BGR2GRAY);
+
+    // detectMultiScale 參數
+    final minSize = max(5, (cellSize * 0.25).round());
+    final maxSize = (cellSize * 1.0).round();
 
     for (int r = 0; r < rows; r++) {
       for (int c = 0; c < cols; c++) {
         final pt = intersections[r][c];
-        final x = pt.x.round();
-        final y = pt.y.round();
+        final cx = pt.x.round();
+        final cy = pt.y.round();
 
-        // 局部盤面：裁切邊的最外行/列直接跳過（warp 邊界可能有非棋盤內容）
+        // 局部盤面：裁切邊的最外行/列直接跳過
         final skipEdge = _isPartialBoard &&
             ((r == 0 && !_isTopEdge) ||
              (r == rows - 1 && !_isBottomEdge) ||
              (c == 0 && !_isLeftEdge) ||
              (c == cols - 1 && !_isRightEdge));
 
-        if (skipEdge ||
-            x < sampleRadius ||
-            x >= warped.cols - sampleRadius ||
-            y < sampleRadius ||
-            y >= warped.rows - sampleRadius) {
-          samples.add(_IntersectionSample(
-            row: r,
-            col: c,
-            avgV: -1.0,
-            avgS: 0.0,
-            stdV: 0.0,
-          ));
-          continue;
-        }
+        if (skipEdge) continue;
 
-        var totalV = 0.0;
-        var totalS = 0.0;
-        var totalV2 = 0.0;
-        var sampleCount = 0;
+        // 裁切交叉點周圍區域
+        final x1 = max(0, cx - cropHalf);
+        final y1 = max(0, cy - cropHalf);
+        final x2 = min(gray.cols, cx + cropHalf);
+        final y2 = min(gray.rows, cy + cropHalf);
 
-        for (int dy = -sampleRadius; dy <= sampleRadius; dy++) {
-          for (int dx = -sampleRadius; dx <= sampleRadius; dx++) {
-            final sx = (x + dx).clamp(0, warped.cols - 1);
-            final sy = (y + dy).clamp(0, warped.rows - 1);
-            final pixel = hsv.atPixel(sy, sx);
-            totalS += pixel[1];
-            final v = pixel[2].toDouble();
-            totalV += v;
-            totalV2 += v * v;
-            sampleCount++;
+        if (x2 - x1 < minSize || y2 - y1 < minSize) continue;
+
+        final roi = gray.region(cv.Rect(x1, y1, x2 - x1, y2 - y1));
+
+        // 偵測黑子
+        final blackRects = blackClassifier.detectMultiScale(
+          roi,
+          scaleFactor: 1.1,
+          minNeighbors: 3,
+          minSize: (minSize, minSize),
+          maxSize: (maxSize, maxSize),
+        );
+
+        // 偵測白子
+        final whiteRects = whiteClassifier.detectMultiScale(
+          roi,
+          scaleFactor: 1.1,
+          minNeighbors: 3,
+          minSize: (minSize, minSize),
+          maxSize: (maxSize, maxSize),
+        );
+
+        final blackCount = blackRects.length;
+        final whiteCount = whiteRects.length;
+        blackRects.dispose();
+        whiteRects.dispose();
+        roi.dispose();
+
+        if (blackCount > 0 && whiteCount == 0) {
+          grid[r][c] = StoneColor.black;
+          debug.blackCount++;
+        } else if (whiteCount > 0 && blackCount == 0) {
+          grid[r][c] = StoneColor.white;
+          debug.whiteCount++;
+        } else if (blackCount > 0 && whiteCount > 0) {
+          // 兩個都偵測到時，選偵測數量多的
+          grid[r][c] = blackCount >= whiteCount ? StoneColor.black : StoneColor.white;
+          if (grid[r][c] == StoneColor.black) {
+            debug.blackCount++;
+          } else {
+            debug.whiteCount++;
           }
         }
-
-        final avgV = totalV / sampleCount;
-        final avgS = totalS / sampleCount;
-        final variance = (totalV2 / sampleCount) - (avgV * avgV);
-        final stdV = sqrt(max(0, variance));
-
-        samples.add(_IntersectionSample(
-          row: r,
-          col: c,
-          avgV: avgV,
-          avgS: avgS,
-          stdV: stdV,
-        ));
-      }
-    }
-    hsv.dispose();
-
-    // === V/S 值統計 ===
-    final validSamples = samples.where((s) => s.avgV >= 0).toList();
-    if (validSamples.isEmpty) return grid;
-
-    final vValues = validSamples.map((s) => s.avgV).toList();
-    final sValues = validSamples.map((s) => s.avgS).toList();
-
-    var minV = 255.0;
-    var maxV = 0.0;
-    for (final v in vValues) {
-      if (v < minV) minV = v;
-      if (v > maxV) maxV = v;
-    }
-    debug.vMin = minV;
-    debug.vMax = maxV;
-
-    final sortedS = List<double>.from(sValues)..sort();
-    final boardMedianS =
-        sortedS.isNotEmpty ? sortedS[sortedS.length ~/ 2] : 0.0;
-
-    // === Step 1：找棋盤底色（V 的眾數）===
-    const binSize = 8;
-    final bins = List.filled(256 ~/ binSize + 1, 0);
-    for (final v in vValues) {
-      bins[v.toInt() ~/ binSize]++;
-    }
-    var maxBin = 0;
-    var maxCount = 0;
-    for (int i = 0; i < bins.length; i++) {
-      if (bins[i] > maxCount) {
-        maxCount = bins[i];
-        maxBin = i;
-      }
-    }
-    final boardV = (maxBin * binSize + binSize / 2).toDouble();
-
-    // stdV 統計（用於輔助驗證）
-    final stdVValues = validSamples.map((s) => s.stdV).toList();
-    final sortedStdV = List<double>.from(stdVValues)..sort();
-    final medianStdV = sortedStdV[sortedStdV.length ~/ 2];
-
-    // 飽和度上限
-    final satLimit = max(boardMedianS * 2.0, 55.0);
-    debug.satLimitBlack = satLimit;
-    debug.satLimitWhite = satLimit;
-
-    _log('[BoardRecognition] boardV=${boardV.toStringAsFixed(0)}, '
-        'medianStdV=${medianStdV.toStringAsFixed(1)}, '
-        'satLimit=${satLimit.toStringAsFixed(0)}');
-
-    // === Step 2：V 距離分群 — 離棋盤底色越遠越可能是棋子 ===
-    // 棋子（黑或白）的 V 值遠離棋盤底色，空交叉點 V 接近底色
-    final distances = validSamples.map((s) => (s.avgV - boardV).abs()).toList();
-    final distThreshold = _otsuThreshold(distances);
-
-    // 收集棋子候選：V 距離夠大 + 飽和度合理
-    // stdV 作為輔助：如果 stdV 特別高（> 2× 中位數），降低信心
-    final stoneCandidates = <_IntersectionSample>[];
-    for (int i = 0; i < validSamples.length; i++) {
-      final s = validSamples[i];
-      final dist = distances[i];
-      final highStdV = s.stdV > medianStdV * 2.0;
-
-      if (dist >= distThreshold && s.avgS < satLimit && !highStdV) {
-        stoneCandidates.add(s);
       }
     }
 
-    _log('[BoardRecognition] V距離分群: distThreshold=${distThreshold.toStringAsFixed(1)}, '
-        '棋子候選=${stoneCandidates.length}/${validSamples.length}');
-
-    // === Step 3：黑白分類 — V < boardV → 黑，V > boardV → 白 ===
-    debug.clusterCenters = [boardV];
-    debug.thresholdBlackBoard = boardV - distThreshold;
-    debug.thresholdBoardWhite = boardV + distThreshold;
-
-    for (final s in stoneCandidates) {
-      if (s.avgV < boardV) {
-        grid[s.row][s.col] = StoneColor.black;
-        debug.blackCount++;
-      } else {
-        grid[s.row][s.col] = StoneColor.white;
-        debug.whiteCount++;
-      }
-    }
+    gray.dispose();
+    blackClassifier.dispose();
+    whiteClassifier.dispose();
 
     debug.emptyCount = rows * cols - debug.blackCount - debug.whiteCount;
 
-    _log('[BoardRecognition] 棋子: 黑=${debug.blackCount}, 白=${debug.whiteCount}, 空=${debug.emptyCount}');
+    _log('[BoardRecognition] Haar Cascade: '
+        '黑=${debug.blackCount}, 白=${debug.whiteCount}, 空=${debug.emptyCount}');
 
     // 邊緣分析結果寫入 debug info
     debug.isPartialBoard = _isPartialBoard;
