@@ -1090,7 +1090,7 @@ class BoardRecognition {
     final scaleFactor = (vRange / 180.0).clamp(0.35, 1.0);
 
     var thresholdBB = modeV - 50.0 * scaleFactor;
-    var thresholdBW = modeV + 40.0 * scaleFactor;
+    var thresholdBW = modeV + 25.0 * scaleFactor;
     thresholdBB = max(thresholdBB, 35.0);
     thresholdBW = min(thresholdBW, 230.0);
 
@@ -1129,8 +1129,8 @@ class BoardRecognition {
         // 邊界案例：未過門檻但表面均勻 → 用 stdV 輔助判定
         // 均勻 + 明顯偏亮 → 可能是白子
         // 均勻 + 明顯偏暗 → 可能是黑子
-        final halfGapWhite = (thresholdBW - modeV) * 0.5;
-        final halfGapBlack = (modeV - thresholdBB) * 0.5;
+        final halfGapWhite = (thresholdBW - modeV) * 0.3;
+        final halfGapBlack = (modeV - thresholdBB) * 0.3;
         if (sample.avgV > modeV + halfGapWhite && sample.avgS < satLimitWhite) {
           grid[sample.row][sample.col] = StoneColor.white;
           debug.whiteCount++;
