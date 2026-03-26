@@ -32,10 +32,16 @@ jobs:
         working-directory: apps/android
         run: flutter build apk --debug
 
+      - name: Rename APK with version
+        run: |
+          VERSION=${{ github.ref_name }}
+          cp apps/android/build/app/outputs/flutter-apk/app-debug.apk \
+             apps/android/build/app/outputs/flutter-apk/go-board-recognition-${VERSION}.apk
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: apps/android/build/app/outputs/flutter-apk/app-debug.apk
+          files: apps/android/build/app/outputs/flutter-apk/go-board-recognition-${{ github.ref_name }}.apk
           prerelease: true
           name: ${{ github.ref_name }} (Closed Alpha)
           generate_release_notes: true
