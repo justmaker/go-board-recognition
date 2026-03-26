@@ -1117,95 +1117,64 @@ class BoardRecognition {
     final boardMedianS =
         sortedS.isNotEmpty ? sortedS[sortedS.length ~/ 2] : 0.0;
 
-    // === Step 1：Otsu on stdV — 分離棋子（均勻表面）vs 空交叉點（有格線）===
-    final stdVValues = validSamples.map((s) => s.stdV).toList();
-    final stdVThreshold = _otsuThreshold(stdVValues);
+    // === Step 1：找棋盤底色（V 的眾數）===
+    const binSize = 8;
+    final bins = List.filled(256 ~/ binSize + 1, 0);
+    for (final v in vValues) {
+      bins[v.toInt() ~/ binSize]++;
+    }
+    var maxBin = 0;
+    var maxCount = 0;
+    for (int i = 0; i < bins.length; i++) {
+      if (bins[i] > maxCount) {
+        maxCount = bins[i];
+        maxBin = i;
+      }
+    }
+    final boardV = (maxBin * binSize + binSize / 2).toDouble();
 
-    // 飽和度上限：棋子（黑/白）飽和度低於棋盤底色
+    // stdV 統計（用於輔助驗證）
+    final stdVValues = validSamples.map((s) => s.stdV).toList();
+    final sortedStdV = List<double>.from(stdVValues)..sort();
+    final medianStdV = sortedStdV[sortedStdV.length ~/ 2];
+
+    // 飽和度上限
     final satLimit = max(boardMedianS * 2.0, 55.0);
     debug.satLimitBlack = satLimit;
     debug.satLimitWhite = satLimit;
 
-    // 收集棋子候選：表面均勻 + 飽和度合理
+    _log('[BoardRecognition] boardV=${boardV.toStringAsFixed(0)}, '
+        'medianStdV=${medianStdV.toStringAsFixed(1)}, '
+        'satLimit=${satLimit.toStringAsFixed(0)}');
+
+    // === Step 2：V 距離分群 — 離棋盤底色越遠越可能是棋子 ===
+    // 棋子（黑或白）的 V 值遠離棋盤底色，空交叉點 V 接近底色
+    final distances = validSamples.map((s) => (s.avgV - boardV).abs()).toList();
+    final distThreshold = _otsuThreshold(distances);
+
+    // 收集棋子候選：V 距離夠大 + 飽和度合理
+    // stdV 作為輔助：如果 stdV 特別高（> 2× 中位數），降低信心
     final stoneCandidates = <_IntersectionSample>[];
-    for (final s in validSamples) {
-      if (s.stdV < stdVThreshold && s.avgS < satLimit) {
+    for (int i = 0; i < validSamples.length; i++) {
+      final s = validSamples[i];
+      final dist = distances[i];
+      final highStdV = s.stdV > medianStdV * 2.0;
+
+      if (dist >= distThreshold && s.avgS < satLimit && !highStdV) {
         stoneCandidates.add(s);
       }
     }
 
-    _log('[BoardRecognition] stdV 分群: threshold=${stdVThreshold.toStringAsFixed(1)}, '
+    _log('[BoardRecognition] V距離分群: distThreshold=${distThreshold.toStringAsFixed(1)}, '
         '棋子候選=${stoneCandidates.length}/${validSamples.length}');
 
-    // === Step 2：V 值分群 — 分離黑子和白子 ===
-    if (stoneCandidates.length >= 2) {
-      final stoneVs = stoneCandidates.map((s) => s.avgV).toList();
-      final vThreshold = _otsuThreshold(stoneVs);
+    // === Step 3：黑白分類 — V < boardV → 黑，V > boardV → 白 ===
+    debug.clusterCenters = [boardV];
+    debug.thresholdBlackBoard = boardV - distThreshold;
+    debug.thresholdBoardWhite = boardV + distThreshold;
 
-      // 驗證是否真的有兩種顏色
-      final lowerVs = stoneVs.where((v) => v < vThreshold).toList();
-      final upperVs = stoneVs.where((v) => v >= vThreshold).toList();
-
-      double mean(List<double> vals) =>
-          vals.isEmpty ? 0 : vals.reduce((a, b) => a + b) / vals.length;
-
-      final lowerMean = mean(lowerVs);
-      final upperMean = mean(upperVs);
-      final hasTwoColors =
-          lowerVs.isNotEmpty && upperVs.isNotEmpty && (upperMean - lowerMean) > 15;
-
-      _log('[BoardRecognition] V 分群: threshold=${vThreshold.toStringAsFixed(1)}, '
-          'lower=${lowerVs.length}(mean=${lowerMean.toStringAsFixed(0)}), '
-          'upper=${upperVs.length}(mean=${upperMean.toStringAsFixed(0)}), '
-          'twoColors=$hasTwoColors');
-
-      // 計算棋盤底色 V（用非棋子的 validSamples 的 V 中位數）
-      final boardVs = validSamples
-          .where((s) => s.stdV >= stdVThreshold || s.avgS >= satLimit)
-          .map((s) => s.avgV)
-          .toList()
-        ..sort();
-      final boardMedianV = boardVs.isNotEmpty
-          ? boardVs[boardVs.length ~/ 2]
-          : (minV + maxV) / 2;
-
-      debug.clusterCenters = [vThreshold];
-      debug.thresholdBlackBoard = vThreshold;
-      debug.thresholdBoardWhite = vThreshold;
-
-      for (final s in stoneCandidates) {
-        if (hasTwoColors) {
-          if (s.avgV < vThreshold) {
-            grid[s.row][s.col] = StoneColor.black;
-            debug.blackCount++;
-          } else {
-            grid[s.row][s.col] = StoneColor.white;
-            debug.whiteCount++;
-          }
-        } else {
-          // 只有一種顏色：跟棋盤底色比較
-          if (mean(stoneVs) < boardMedianV) {
-            grid[s.row][s.col] = StoneColor.black;
-            debug.blackCount++;
-          } else {
-            grid[s.row][s.col] = StoneColor.white;
-            debug.whiteCount++;
-          }
-        }
-      }
-    } else if (stoneCandidates.length == 1) {
-      // 計算棋盤底色 V
-      final boardVs = validSamples
-          .where((s) => s.stdV >= stdVThreshold)
-          .map((s) => s.avgV)
-          .toList()
-        ..sort();
-      final boardMedianV = boardVs.isNotEmpty
-          ? boardVs[boardVs.length ~/ 2]
-          : (minV + maxV) / 2;
-
-      final s = stoneCandidates[0];
-      if (s.avgV < boardMedianV) {
+    for (final s in stoneCandidates) {
+      if (s.avgV < boardV) {
         grid[s.row][s.col] = StoneColor.black;
         debug.blackCount++;
       } else {
