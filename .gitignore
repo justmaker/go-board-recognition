@@ -1,0 +1,22 @@
+# Dart/Flutter
+.dart_tool/
+.packages
+build/
+*.iml
+.idea/
+.metadata
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+*.swp
+*.swo
+.vscode/
+
+# Melos
+.melos/
+
+# pubspec.lock for packages (apps keep theirs)
+packages/**/pubspec.lock
