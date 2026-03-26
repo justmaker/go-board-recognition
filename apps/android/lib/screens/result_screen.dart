@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:go_board_core/go_board_core.dart';
+import 'package:share_plus/share_plus.dart';
 import '../widgets/debug_board_painter.dart';
 
 class ResultScreen extends StatefulWidget {
@@ -56,12 +57,18 @@ class _ResultScreenState extends State<ResultScreen> {
       appBar: AppBar(
         title: const Text('辨識結果'),
         actions: [
-          if (_result != null)
+          if (_result != null) ...[
+            IconButton(
+              icon: const Icon(Icons.share),
+              onPressed: _exportSgf,
+              tooltip: '匯出 SGF',
+            ),
             IconButton(
               icon: Icon(_showDebugOverlay ? Icons.bug_report : Icons.bug_report_outlined),
               onPressed: () => setState(() => _showDebugOverlay = !_showDebugOverlay),
               tooltip: 'Debug overlay',
             ),
+          ],
         ],
       ),
       body: _loading
@@ -87,6 +94,16 @@ class _ResultScreenState extends State<ResultScreen> {
           ],
         ),
       ),
+    );
+  }
+
+  Future<void> _exportSgf() async {
+    final board = _result!.boardState;
+    final sgf = SgfExport.toSgf(board, comment: '由 BoardScanner 辨識匯出');
+    final tempFile = File('${Directory.systemTemp.path}/board_scan.sgf');
+    await tempFile.writeAsString(sgf);
+    await SharePlus.instance.share(
+      ShareParams(files: [XFile(tempFile.path)]),
     );
   }
 
