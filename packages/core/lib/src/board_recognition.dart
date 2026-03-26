@@ -1032,6 +1032,63 @@ class BoardRecognition {
       (_) => List.filled(cols, StoneColor.empty),
     );
 
+    // === 格線間距（HoughCircles 參數用）===
+    final cellW = cols > 1
+        ? (intersections[0][cols - 1].x - intersections[0][0].x) / (cols - 1)
+        : warped.cols / 10.0;
+    final cellH = rows > 1
+        ? (intersections[rows - 1][0].y - intersections[0][0].y) / (rows - 1)
+        : warped.rows / 10.0;
+    final cellSize = min(cellW, cellH);
+    final stoneRadius = (cellSize * 0.42).round();
+
+    // === Signal A：HoughCircles 幾何偵測 ===
+    final circleVotes = List.generate(
+      rows, (_) => List.filled(cols, false),
+    );
+
+    final gray = cv.cvtColor(warped, cv.COLOR_BGR2GRAY);
+    final blurred = cv.gaussianBlur(gray, (5, 5), 1.5);
+    final circles = cv.HoughCircles(
+      blurred,
+      cv.HOUGH_GRADIENT,
+      1.0,
+      cellSize * 0.7,
+      param1: 80,
+      param2: 25,
+      minRadius: max(1, (stoneRadius * 0.5).round()),
+      maxRadius: (stoneRadius * 1.3).round(),
+    );
+    gray.dispose();
+    blurred.dispose();
+
+    final matchRadius = cellSize * 0.5;
+    for (int i = 0; i < circles.rows; i++) {
+      final circle = circles.at<cv.Vec3f>(i, 0);
+      final cx = circle.val1.toDouble();
+      final cy = circle.val2.toDouble();
+      var bestR = -1;
+      var bestC = -1;
+      var bestDist = double.infinity;
+      for (int r = 0; r < rows; r++) {
+        for (int c = 0; c < cols; c++) {
+          final pt = intersections[r][c];
+          final d = sqrt(pow(cx - pt.x, 2) + pow(cy - pt.y, 2));
+          if (d < bestDist) { bestDist = d; bestR = r; bestC = c; }
+        }
+      }
+      if (bestR >= 0 && bestDist <= matchRadius) {
+        circleVotes[bestR][bestC] = true;
+      }
+    }
+    final circleCount = circles.rows;
+    circles.dispose();
+
+    final voteCount = circleVotes.expand((r) => r).where((v) => v).length;
+    _log('[BoardRecognition] HoughCircles: $circleCount 個圓 → '
+        '$voteCount 個交叉點有投票');
+
+    // === Signal B：V-distance 色彩分析 ===
     final sampleRadius = (warped.cols / cols * 0.35).round();
     final samples = <_IntersectionSample>[];
 
@@ -1041,7 +1098,6 @@ class BoardRecognition {
         final x = pt.x.round();
         final y = pt.y.round();
 
-        // 局部盤面：裁切邊的最外行/列直接跳過（warp 邊界可能有非棋盤內容）
         final skipEdge = _isPartialBoard &&
             ((r == 0 && !_isTopEdge) ||
              (r == rows - 1 && !_isBottomEdge) ||
@@ -1054,11 +1110,7 @@ class BoardRecognition {
             y < sampleRadius ||
             y >= warped.rows - sampleRadius) {
           samples.add(_IntersectionSample(
-            row: r,
-            col: c,
-            avgV: -1.0,
-            avgS: 0.0,
-            stdV: 0.0,
+            row: r, col: c, avgV: -1.0, avgS: 0.0, stdV: 0.0,
           ));
           continue;
         }
@@ -1087,17 +1139,12 @@ class BoardRecognition {
         final stdV = sqrt(max(0, variance));
 
         samples.add(_IntersectionSample(
-          row: r,
-          col: c,
-          avgV: avgV,
-          avgS: avgS,
-          stdV: stdV,
+          row: r, col: c, avgV: avgV, avgS: avgS, stdV: stdV,
         ));
       }
     }
     hsv.dispose();
 
-    // === V/S 值統計 ===
     final validSamples = samples.where((s) => s.avgV >= 0).toList();
     if (validSamples.isEmpty) return grid;
 
@@ -1117,69 +1164,84 @@ class BoardRecognition {
     final boardMedianS =
         sortedS.isNotEmpty ? sortedS[sortedS.length ~/ 2] : 0.0;
 
-    // === Step 1：找棋盤底色（V 的眾數）===
+    // 棋盤底色（V 眾數）
     const binSize = 8;
     final bins = List.filled(256 ~/ binSize + 1, 0);
     for (final v in vValues) {
       bins[v.toInt() ~/ binSize]++;
     }
     var maxBin = 0;
-    var maxCount = 0;
+    var maxBinCount = 0;
     for (int i = 0; i < bins.length; i++) {
-      if (bins[i] > maxCount) {
-        maxCount = bins[i];
-        maxBin = i;
-      }
+      if (bins[i] > maxBinCount) { maxBinCount = bins[i]; maxBin = i; }
     }
     final boardV = (maxBin * binSize + binSize / 2).toDouble();
 
-    // stdV 統計（用於輔助驗證）
     final stdVValues = validSamples.map((s) => s.stdV).toList();
     final sortedStdV = List<double>.from(stdVValues)..sort();
     final medianStdV = sortedStdV[sortedStdV.length ~/ 2];
-
-    // 飽和度上限
     final satLimit = max(boardMedianS * 2.0, 55.0);
     debug.satLimitBlack = satLimit;
     debug.satLimitWhite = satLimit;
 
-    _log('[BoardRecognition] boardV=${boardV.toStringAsFixed(0)}, '
-        'medianStdV=${medianStdV.toStringAsFixed(1)}, '
-        'satLimit=${satLimit.toStringAsFixed(0)}');
-
-    // === Step 2：V 距離分群 — 離棋盤底色越遠越可能是棋子 ===
-    // 棋子（黑或白）的 V 值遠離棋盤底色，空交叉點 V 接近底色
-    final distances = validSamples.map((s) => (s.avgV - boardV).abs()).toList();
+    // V 距離 + Otsu 閾值
+    final sampleMap = <int, _IntersectionSample>{};
+    final distances = <double>[];
+    for (final s in validSamples) {
+      final dist = (s.avgV - boardV).abs();
+      distances.add(dist);
+      sampleMap[s.row * cols + s.col] = s;
+    }
     final distThreshold = _otsuThreshold(distances);
 
-    // 收集棋子候選：V 距離夠大 + 飽和度合理
-    // stdV 作為輔助：如果 stdV 特別高（> 2× 中位數），降低信心
-    final stoneCandidates = <_IntersectionSample>[];
-    for (int i = 0; i < validSamples.length; i++) {
-      final s = validSamples[i];
-      final dist = distances[i];
-      final highStdV = s.stdV > medianStdV * 2.0;
+    _log('[BoardRecognition] hybrid: boardV=${boardV.toStringAsFixed(0)}, '
+        'distThreshold=${distThreshold.toStringAsFixed(1)}, '
+        'medianStdV=${medianStdV.toStringAsFixed(1)}');
 
-      if (dist >= distThreshold && s.avgS < satLimit && !highStdV) {
-        stoneCandidates.add(s);
-      }
-    }
+    // === 混合決策：圓形投票 + V 距離交叉驗證 ===
+    // 策略：
+    //  - 兩個信號都認為是棋子 → 直接採信（高信心）
+    //  - 只有 V-distance 認為是棋子 → 採信（V-distance 單獨也夠用）
+    //  - 只有 HoughCircles 認為是棋子但 V-distance 太小 → 用寬鬆閾值再檢查
+    //    （圓形偵測到了東西，可能 Otsu 閾值太嚴格）
+    final relaxedThreshold = distThreshold * 0.6;
 
-    _log('[BoardRecognition] V距離分群: distThreshold=${distThreshold.toStringAsFixed(1)}, '
-        '棋子候選=${stoneCandidates.length}/${validSamples.length}');
-
-    // === Step 3：黑白分類 — V < boardV → 黑，V > boardV → 白 ===
     debug.clusterCenters = [boardV];
     debug.thresholdBlackBoard = boardV - distThreshold;
     debug.thresholdBoardWhite = boardV + distThreshold;
 
-    for (final s in stoneCandidates) {
-      if (s.avgV < boardV) {
-        grid[s.row][s.col] = StoneColor.black;
-        debug.blackCount++;
-      } else {
-        grid[s.row][s.col] = StoneColor.white;
-        debug.whiteCount++;
+    for (int r = 0; r < rows; r++) {
+      for (int c = 0; c < cols; c++) {
+        final key = r * cols + c;
+        final s = sampleMap[key];
+        if (s == null) continue;
+
+        final dist = (s.avgV - boardV).abs();
+        final hasCircle = circleVotes[r][c];
+        final highStdV = s.stdV > medianStdV * 2.0;
+        final satOk = s.avgS < satLimit;
+
+        // 判斷是否為棋子
+        bool isStone;
+        if (dist >= distThreshold && satOk && !highStdV) {
+          // V-distance 夠大 → 採信
+          isStone = true;
+        } else if (hasCircle && dist >= relaxedThreshold && satOk) {
+          // 有圓形投票 + 寬鬆 V-distance → 也採信
+          isStone = true;
+        } else {
+          isStone = false;
+        }
+
+        if (isStone) {
+          if (s.avgV < boardV) {
+            grid[r][c] = StoneColor.black;
+            debug.blackCount++;
+          } else {
+            grid[r][c] = StoneColor.white;
+            debug.whiteCount++;
+          }
+        }
       }
     }
 
@@ -1187,7 +1249,6 @@ class BoardRecognition {
 
     _log('[BoardRecognition] 棋子: 黑=${debug.blackCount}, 白=${debug.whiteCount}, 空=${debug.emptyCount}');
 
-    // 邊緣分析結果寫入 debug info
     debug.isPartialBoard = _isPartialBoard;
     debug.isTopEdge = _isTopEdge;
     debug.isBottomEdge = _isBottomEdge;
