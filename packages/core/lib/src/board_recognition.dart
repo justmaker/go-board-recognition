@@ -576,9 +576,9 @@ class BoardRecognition {
       }
     }
 
-    final hLines =
+    var hLines =
         _generateGridFromSpacing(hPhase, hSpacing, size.toDouble());
-    final vLines =
+    var vLines =
         _generateGridFromSpacing(vPhase, vSpacing, size.toDouble());
 
     // === 邊緣留白分析：判斷是完整棋盤還是局部盤面 ===
@@ -618,8 +618,13 @@ class BoardRecognition {
       rows = snapToStandard(hRatio);
       cols = snapToStandard(vRatio);
     } else {
-      // 局部盤面：直接使用偵測到的格線數
+      // 局部盤面：只保留有偵測證據範圍內的格線
       _isPartialBoard = true;
+
+      // 用偵測到的實際位置限制範圍（加半格緩衝）
+      hLines = _clipToEvidence(hLines, hFiltered, hSpacing);
+      vLines = _clipToEvidence(vLines, vFiltered, vSpacing);
+
       rows = hLines.length;
       cols = vLines.length;
     }
@@ -787,6 +792,18 @@ class BoardRecognition {
       k++;
     }
     return lines;
+  }
+
+  /// 局部盤面用：只保留有偵測證據範圍內的格線
+  /// generated = 等間距填滿整張圖的格線
+  /// evidence = 實際偵測到的位置（Hough + projection dips）
+  /// 保留範圍：evidence 最小值 - spacing/2 到最大值 + spacing/2
+  List<double> _clipToEvidence(
+      List<double> generated, List<double> evidence, double spacing) {
+    if (evidence.isEmpty) return generated;
+    final lo = evidence.first - spacing * 0.5;
+    final hi = evidence.last + spacing * 0.5;
+    return generated.where((p) => p >= lo && p <= hi).toList();
   }
 
   List<double> _trimToSize(
@@ -975,7 +992,15 @@ class BoardRecognition {
         final x = pt.x.round();
         final y = pt.y.round();
 
-        if (x < sampleRadius ||
+        // 局部盤面：裁切邊的最外行/列直接跳過（warp 邊界可能有非棋盤內容）
+        final skipEdge = _isPartialBoard &&
+            ((r == 0 && !_isTopEdge) ||
+             (r == rows - 1 && !_isBottomEdge) ||
+             (c == 0 && !_isLeftEdge) ||
+             (c == cols - 1 && !_isRightEdge));
+
+        if (skipEdge ||
+            x < sampleRadius ||
             x >= warped.cols - sampleRadius ||
             y < sampleRadius ||
             y >= warped.rows - sampleRadius) {
