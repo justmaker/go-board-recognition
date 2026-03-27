@@ -102,9 +102,7 @@ class _ResultScreenState extends State<ResultScreen> {
     final sgf = SgfExport.toSgf(board, comment: '由 BoardScanner 辨識匯出');
     final tempFile = File('${Directory.systemTemp.path}/board_scan.sgf');
     await tempFile.writeAsString(sgf);
-    await SharePlus.instance.share(
-      ShareParams(files: [XFile(tempFile.path)]),
-    );
+    await Share.shareXFiles([XFile(tempFile.path)]);
   }
 
   Widget _buildResult() {
