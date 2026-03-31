@@ -10,6 +10,10 @@ class _IntersectionSample {
   final double avgV;
   final double avgS;
   final double stdV;
+  /// Edge density: average gradient magnitude in the sample area.
+  /// Stones (smooth round objects) have high edge density at their border;
+  /// empty intersections only have thin grid lines.
+  final double edgeDensity;
 
   _IntersectionSample({
     required this.row,
@@ -17,6 +21,7 @@ class _IntersectionSample {
     required this.avgV,
     required this.avgS,
     required this.stdV,
+    this.edgeDensity = 0.0,
   });
 }
 
@@ -1027,6 +1032,19 @@ class BoardRecognition {
     debug.detectedCols = cols;
 
     final hsv = cv.cvtColor(warped, cv.COLOR_BGR2HSV);
+    // Compute gradient magnitude for edge density feature
+    final grayForEdge = cv.cvtColor(warped, cv.COLOR_BGR2GRAY);
+    final sobelX = cv.Sobel(grayForEdge, cv.MatType.CV_16SC1, 1, 0, ksize: 3);
+    final sobelY = cv.Sobel(grayForEdge, cv.MatType.CV_16SC1, 0, 1, ksize: 3);
+    final absSobelX = cv.convertScaleAbs(sobelX);
+    final absSobelY = cv.convertScaleAbs(sobelY);
+    final gradMag = cv.addWeighted(absSobelX, 0.5, absSobelY, 0.5, 0);
+    sobelX.dispose();
+    sobelY.dispose();
+    absSobelX.dispose();
+    absSobelY.dispose();
+    grayForEdge.dispose();
+
     final grid = List.generate(
       rows,
       (_) => List.filled(cols, StoneColor.empty),
@@ -1066,6 +1084,7 @@ class BoardRecognition {
         var totalV = 0.0;
         var totalS = 0.0;
         var totalV2 = 0.0;
+        var totalEdge = 0.0;
         var sampleCount = 0;
 
         for (int dy = -sampleRadius; dy <= sampleRadius; dy++) {
@@ -1077,6 +1096,7 @@ class BoardRecognition {
             final v = pixel[2].toDouble();
             totalV += v;
             totalV2 += v * v;
+            totalEdge += gradMag.atPixel(sy, sx)[0].toDouble();
             sampleCount++;
           }
         }
@@ -1085,6 +1105,7 @@ class BoardRecognition {
         final avgS = totalS / sampleCount;
         final variance = (totalV2 / sampleCount) - (avgV * avgV);
         final stdV = sqrt(max(0, variance));
+        final edgeDensity = totalEdge / sampleCount;
 
         samples.add(_IntersectionSample(
           row: r,
@@ -1092,10 +1113,12 @@ class BoardRecognition {
           avgV: avgV,
           avgS: avgS,
           stdV: stdV,
+          edgeDensity: edgeDensity,
         ));
       }
     }
     hsv.dispose();
+    gradMag.dispose();
 
     // === V/S 值統計 ===
     final validSamples = samples.where((s) => s.avgV >= 0).toList();
@@ -1143,24 +1166,47 @@ class BoardRecognition {
     debug.satLimitBlack = satLimit;
     debug.satLimitWhite = satLimit;
 
+    // Edge density statistics
+    final edgeValues = validSamples.map((s) => s.edgeDensity).toList();
+    final sortedEdge = List<double>.from(edgeValues)..sort();
+    final medianEdge = sortedEdge[sortedEdge.length ~/ 2];
+    // Otsu on edge density to separate stones (high edges) from empty (low edges)
+    final edgeThreshold = _otsuThreshold(edgeValues);
+
     _log('[BoardRecognition] boardV=${boardV.toStringAsFixed(0)}, '
         'medianStdV=${medianStdV.toStringAsFixed(1)}, '
-        'satLimit=${satLimit.toStringAsFixed(0)}');
+        'satLimit=${satLimit.toStringAsFixed(0)}, '
+        'medianEdge=${medianEdge.toStringAsFixed(1)}, '
+        'edgeThreshold=${edgeThreshold.toStringAsFixed(1)}');
 
     // === Step 2：V 距離分群 — 離棋盤底色越遠越可能是棋子 ===
     // 棋子（黑或白）的 V 值遠離棋盤底色，空交叉點 V 接近底色
     final distances = validSamples.map((s) => (s.avgV - boardV).abs()).toList();
     final distThreshold = _otsuThreshold(distances);
 
-    // 收集棋子候選：V 距離夠大 + 飽和度合理
-    // stdV 作為輔助：如果 stdV 特別高（> 2× 中位數），降低信心
+    // 收集棋子候選：
+    // Primary: V 距離夠大 + 飽和度合理 (original method)
+    // Secondary: Edge density 夠高 (rescues white stones near board color)
     final stoneCandidates = <_IntersectionSample>[];
     for (int i = 0; i < validSamples.length; i++) {
       final s = validSamples[i];
       final dist = distances[i];
-      final highStdV = s.stdV > medianStdV * 2.0;
+      final highStdV = s.stdV > medianStdV * 2.5;
 
-      if (dist >= distThreshold && s.avgS < satLimit && !highStdV) {
+      // Primary: V-distance method (works for black stones and obvious white)
+      final vDistCandidate = dist >= distThreshold && s.avgS < satLimit && !highStdV;
+
+      // Secondary: Edge density method — catch white stones that V-distance misses
+      // White stones have V > boardV (brighter) + high edge density (round border)
+      // but low V-distance from board color
+      final edgeCandidate = !vDistCandidate &&
+          s.edgeDensity >= edgeThreshold &&
+          s.avgV > boardV - 5 && // not too dark (not black stone or shadow)
+          s.avgS < satLimit &&
+          !highStdV &&
+          dist >= distThreshold * 0.3; // at least some V-distance
+
+      if (vDistCandidate || edgeCandidate) {
         stoneCandidates.add(s);
       }
     }
