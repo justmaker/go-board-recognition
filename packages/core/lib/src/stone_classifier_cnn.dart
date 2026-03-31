@@ -106,14 +106,17 @@ class StoneClassifierCNN {
     // After pool: [64, 2, 2] = 256
 
     // Flatten: already flat (x is [256])
+    // Flatten: convert Float32List to List<double> for FC layers
+    final flat = List<double>.from(x);
+
     // FC1: 256 → 64
-    var fc1 = _linear(x, 256, 64,
+    var fc1 = _linear(flat, 256, 64,
         StoneClassifierWeights.classifier_1_weight, StoneClassifierWeights.classifier_1_bias);
-    fc1 = _relu(fc1);
+    final fc1Relu = _relu(fc1);
     // Skip dropout (inference mode)
 
     // FC2: 64 → 3
-    final fc2 = _linear(fc1, 64, 3,
+    final fc2 = _linear(fc1Relu, 64, 3,
         StoneClassifierWeights.classifier_4_weight, StoneClassifierWeights.classifier_4_bias);
 
     return fc2;
@@ -197,7 +200,7 @@ class StoneClassifierCNN {
 
   /// Fully connected layer
   List<double> _linear(
-    Float32List input, int inF, int outF,
+    List<double> input, int inF, int outF,
     List<double> weight, List<double> bias,
   ) {
     final output = List<double>.filled(outF, 0);
@@ -211,12 +214,8 @@ class StoneClassifierCNN {
     return output;
   }
 
-  Float32List _relu(List<double> input) {
-    final out = Float32List(input.length);
-    for (int i = 0; i < input.length; i++) {
-      out[i] = input[i] > 0 ? input[i] : 0;
-    }
-    return out;
+  List<double> _relu(List<double> input) {
+    return [for (final v in input) v > 0 ? v : 0.0];
   }
 
   List<double> _softmax(List<double> input) {
