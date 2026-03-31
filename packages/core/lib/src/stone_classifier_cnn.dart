@@ -9,8 +9,7 @@ import 'board_state.dart';
 /// Input: 32×32×3 RGB (normalized to [-1, 1])
 /// Output: 3 classes (black, empty, white) — sorted alphabetically by ImageFolder
 class StoneClassifierCNN {
-  // Weights loaded from auto-generated constants
-  final _w = StoneClassifierWeights;
+  // Use StoneClassifierWeights.xxx directly for weight access
 
   /// Classify a 32×32 patch from a cv.Mat image.
   /// Returns StoneColor.
@@ -83,39 +82,39 @@ class StoneClassifierCNN {
   List<double> _forward(Float32List input) {
     // Input: [3, 32, 32]
     var x = _conv2dBnReluPool(input, 3, 32, 32, 16,
-        _w.features_0_weight, _w.features_0_bias,
-        _w.features_1_weight, _w.features_1_bias,
-        _w.features_1_running_mean, _w.features_1_running_var);
+        StoneClassifierWeights.features_0_weight, StoneClassifierWeights.features_0_bias,
+        StoneClassifierWeights.features_1_weight, StoneClassifierWeights.features_1_bias,
+        StoneClassifierWeights.features_1_running_mean, StoneClassifierWeights.features_1_running_var);
     // After pool: [16, 16, 16]
 
     x = _conv2dBnReluPool(x, 16, 16, 16, 32,
-        _w.features_4_weight, _w.features_4_bias,
-        _w.features_5_weight, _w.features_5_bias,
-        _w.features_5_running_mean, _w.features_5_running_var);
+        StoneClassifierWeights.features_4_weight, StoneClassifierWeights.features_4_bias,
+        StoneClassifierWeights.features_5_weight, StoneClassifierWeights.features_5_bias,
+        StoneClassifierWeights.features_5_running_mean, StoneClassifierWeights.features_5_running_var);
     // After pool: [32, 8, 8]
 
     x = _conv2dBnReluPool(x, 32, 8, 8, 64,
-        _w.features_8_weight, _w.features_8_bias,
-        _w.features_9_weight, _w.features_9_bias,
-        _w.features_9_running_mean, _w.features_9_running_var);
+        StoneClassifierWeights.features_8_weight, StoneClassifierWeights.features_8_bias,
+        StoneClassifierWeights.features_9_weight, StoneClassifierWeights.features_9_bias,
+        StoneClassifierWeights.features_9_running_mean, StoneClassifierWeights.features_9_running_var);
     // After pool: [64, 4, 4]
 
     x = _conv2dBnReluPool(x, 64, 4, 4, 64,
-        _w.features_12_weight, _w.features_12_bias,
-        _w.features_13_weight, _w.features_13_bias,
-        _w.features_13_running_mean, _w.features_13_running_var);
+        StoneClassifierWeights.features_12_weight, StoneClassifierWeights.features_12_bias,
+        StoneClassifierWeights.features_13_weight, StoneClassifierWeights.features_13_bias,
+        StoneClassifierWeights.features_13_running_mean, StoneClassifierWeights.features_13_running_var);
     // After pool: [64, 2, 2] = 256
 
     // Flatten: already flat (x is [256])
     // FC1: 256 → 64
     var fc1 = _linear(x, 256, 64,
-        _w.classifier_1_weight, _w.classifier_1_bias);
+        StoneClassifierWeights.classifier_1_weight, StoneClassifierWeights.classifier_1_bias);
     fc1 = _relu(fc1);
     // Skip dropout (inference mode)
 
     // FC2: 64 → 3
     final fc2 = _linear(fc1, 64, 3,
-        _w.classifier_4_weight, _w.classifier_4_bias);
+        StoneClassifierWeights.classifier_4_weight, StoneClassifierWeights.classifier_4_bias);
 
     return fc2;
   }

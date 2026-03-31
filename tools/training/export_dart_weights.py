@@ -25,8 +25,11 @@ def export_dart(pth_path: str, output_path: str):
     lines.append("/// CNN weights for stone classification (black/white/empty).")
     lines.append("class StoneClassifierWeights {")
 
-    # Export each parameter as a flat Float32List literal
-    for name, param in model.named_parameters():
+    # Export each parameter AND buffer (running_mean, running_var)
+    all_items = list(model.named_parameters()) + list(model.named_buffers())
+    for name, param in all_items:
+        if 'num_batches_tracked' in name:
+            continue  # skip batch count tracker
         data = param.detach().cpu().numpy().flatten()
         dart_name = name.replace('.', '_')
 
