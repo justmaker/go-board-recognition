@@ -1032,17 +1032,11 @@ class BoardRecognition {
     debug.detectedCols = cols;
 
     final hsv = cv.cvtColor(warped, cv.COLOR_BGR2HSV);
-    // Compute gradient magnitude for edge density feature
+    // Compute edge map for edge density feature
     final grayForEdge = cv.cvtColor(warped, cv.COLOR_BGR2GRAY);
-    final sobelX = cv.Sobel(grayForEdge, cv.MatType.CV_16SC1, 1, 0, ksize: 3);
-    final sobelY = cv.Sobel(grayForEdge, cv.MatType.CV_16SC1, 0, 1, ksize: 3);
-    final absSobelX = cv.convertScaleAbs(sobelX);
-    final absSobelY = cv.convertScaleAbs(sobelY);
-    final gradMag = cv.addWeighted(absSobelX, 0.5, absSobelY, 0.5, 0);
-    sobelX.dispose();
-    sobelY.dispose();
-    absSobelX.dispose();
-    absSobelY.dispose();
+    final blurForEdge = cv.gaussianBlur(grayForEdge, (3, 3), 0);
+    final edgeMap = cv.canny(blurForEdge, 40, 120);
+    blurForEdge.dispose();
     grayForEdge.dispose();
 
     final grid = List.generate(
@@ -1096,7 +1090,7 @@ class BoardRecognition {
             final v = pixel[2].toDouble();
             totalV += v;
             totalV2 += v * v;
-            totalEdge += gradMag.atPixel(sy, sx)[0].toDouble();
+            totalEdge += edgeMap.atPixel(sy, sx)[0] > 0 ? 1.0 : 0.0;
             sampleCount++;
           }
         }
@@ -1118,7 +1112,7 @@ class BoardRecognition {
       }
     }
     hsv.dispose();
-    gradMag.dispose();
+    edgeMap.dispose();
 
     // === V/S 值統計 ===
     final validSamples = samples.where((s) => s.avgV >= 0).toList();
