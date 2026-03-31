@@ -20,3 +20,6 @@ Thumbs.db
 
 # pubspec.lock for packages (apps keep theirs)
 packages/**/pubspec.lock
+tools/training/.venv/
+tools/training/output/
+tools/training/__pycache__/
