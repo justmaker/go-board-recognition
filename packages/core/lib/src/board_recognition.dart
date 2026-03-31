@@ -2,6 +2,7 @@ import 'dart:math';
 import 'package:opencv_dart/opencv_dart.dart' as cv;
 import 'board_state.dart';
 import 'recognition_debug_info.dart';
+import 'stone_classifier_cnn.dart';
 
 /// 交叉點取樣資料
 class _IntersectionSample {
@@ -60,7 +61,13 @@ class BoardRecognition {
   bool _isLeftEdge = true;
   bool _isRightEdge = true;
 
-  BoardRecognition({this.onLog, this.keepWarpedImage = false});
+  BoardRecognition({this.onLog, this.keepWarpedImage = false, this.useCNN = false});
+
+  /// Whether to use CNN for stone classification instead of V-distance.
+  bool useCNN;
+
+  /// CNN classifier instance (lazy init)
+  StoneClassifierCNN? _cnn;
 
   void _log(String msg) => onLog?.call(msg);
 
@@ -79,7 +86,9 @@ class BoardRecognition {
       final (rows, cols, intersections) = _detectGridLines(warped);
 
       // 3. 在每個交叉點偵測棋子
-      final grid = _detectStones(warped, rows, cols, intersections);
+      final grid = useCNN
+          ? _detectStonesCNN(warped, rows, cols, intersections)
+          : _detectStones(warped, rows, cols, intersections);
 
       final result = RecognitionResult(
         boardState: BoardState(
@@ -104,9 +113,9 @@ class BoardRecognition {
   Future<RecognitionResult> recognizeFromMat(cv.Mat img) async {
     final warped = _findAndWarpBoard(img);
     final (rows, cols, intersections) = _detectGridLines(warped);
-    final grid = _detectStones(warped, rows, cols, intersections);
-
-    final result = RecognitionResult(
+    final grid = useCNN
+        ? _detectStonesCNN(warped, rows, cols, intersections)
+        : _detectStones(warped, rows, cols, intersections);    final result = RecognitionResult(
       boardState: BoardState(
         rows: rows,
         cols: cols,
@@ -1228,6 +1237,87 @@ class BoardRecognition {
     _log('[BoardRecognition] 棋子: 黑=${debug.blackCount}, 白=${debug.whiteCount}, 空=${debug.emptyCount}');
 
     // 邊緣分析結果寫入 debug info
+    debug.isPartialBoard = _isPartialBoard;
+    debug.isTopEdge = _isTopEdge;
+    debug.isBottomEdge = _isBottomEdge;
+    debug.isLeftEdge = _isLeftEdge;
+    debug.isRightEdge = _isRightEdge;
+
+    lastDebugInfo = debug;
+    return grid;
+  }
+
+  // ============================================================
+  // 步驟 3 (CNN)：棋子偵測 — CNN 分類器
+  // ============================================================
+
+  List<List<StoneColor>> _detectStonesCNN(
+    cv.Mat warped,
+    int rows,
+    int cols,
+    List<List<cv.Point2f>> intersections,
+  ) {
+    _cnn ??= StoneClassifierCNN();
+    final debug = RecognitionDebugInfo();
+    debug.detectedBoardSize = max(rows, cols);
+    debug.detectedRows = rows;
+    debug.detectedCols = cols;
+
+    final grid = List.generate(
+      rows,
+      (_) => List.filled(cols, StoneColor.empty),
+    );
+
+    final patchRadius = (warped.cols / cols * 0.5).round();
+    _log('[BoardRecognition] CNN 棋子偵測: patchRadius=$patchRadius');
+
+    for (int r = 0; r < rows; r++) {
+      for (int c = 0; c < cols; c++) {
+        final pt = intersections[r][c];
+        final x = pt.x.round();
+        final y = pt.y.round();
+
+        // Skip edges for partial boards
+        final skipEdge = _isPartialBoard &&
+            ((r == 0 && !_isTopEdge) ||
+             (r == rows - 1 && !_isBottomEdge) ||
+             (c == 0 && !_isLeftEdge) ||
+             (c == cols - 1 && !_isRightEdge));
+
+        if (skipEdge ||
+            x < patchRadius ||
+            x >= warped.cols - patchRadius ||
+            y < patchRadius ||
+            y >= warped.rows - patchRadius) {
+          continue;
+        }
+
+        // Crop patch
+        final roi = cv.Rect(
+          x - patchRadius,
+          y - patchRadius,
+          patchRadius * 2,
+          patchRadius * 2,
+        );
+        final patch = warped.region(roi);
+        final (color, confidence) = _cnn!.classifyWithConfidence(patch);
+        patch.dispose();
+
+        if (color != StoneColor.empty && confidence > 0.5) {
+          grid[r][c] = color;
+          if (color == StoneColor.black) {
+            debug.blackCount++;
+          } else {
+            debug.whiteCount++;
+          }
+        }
+      }
+    }
+
+    debug.emptyCount = rows * cols - debug.blackCount - debug.whiteCount;
+
+    _log('[BoardRecognition] CNN 結果: 黑=${debug.blackCount}, 白=${debug.whiteCount}, 空=${debug.emptyCount}');
+
     debug.isPartialBoard = _isPartialBoard;
     debug.isTopEdge = _isTopEdge;
     debug.isBottomEdge = _isBottomEdge;

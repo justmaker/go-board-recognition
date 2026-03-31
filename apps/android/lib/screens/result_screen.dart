@@ -20,6 +20,7 @@ class _ResultScreenState extends State<ResultScreen> {
   bool _loading = true;
   bool _showDebugOverlay = true;
   bool _editMode = false;
+  bool _useCNN = true; // Default to CNN mode
   BoardState? _editableBoard;
   final List<String> _logs = [];
 
@@ -40,6 +41,7 @@ class _ResultScreenState extends State<ResultScreen> {
       final recognition = BoardRecognition(
         onLog: (msg) => setState(() => _logs.add(msg)),
         keepWarpedImage: true,
+        useCNN: _useCNN,
       );
       final result = await recognition.recognizeFromImage(widget.imagePath);
       setState(() {
@@ -72,6 +74,16 @@ class _ResultScreenState extends State<ResultScreen> {
         title: const Text('辨識結果'),
         actions: [
           if (_result != null) ...[
+            IconButton(
+              icon: Icon(_useCNN ? Icons.psychology : Icons.auto_fix_high),
+              onPressed: () {
+                setState(() {
+                  _useCNN = !_useCNN;
+                });
+                _recognize(); // Re-run with new mode
+              },
+              tooltip: _useCNN ? 'CNN 模式 (切換到 CV)' : 'CV 模式 (切換到 CNN)',
+            ),
             IconButton(
               icon: Icon(_editMode ? Icons.edit_off : Icons.edit),
               onPressed: () => setState(() {
