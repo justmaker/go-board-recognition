@@ -150,7 +150,6 @@ class _ResultScreenState extends State<ResultScreen> {
       _editableBoard = board.setStone(row, col, next);
     });
   }
-  }
 
   Widget _buildResult() {
     final result = _result!;
