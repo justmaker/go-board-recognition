@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:go_board_core/go_board_core.dart';
 import 'package:share_plus/share_plus.dart';
+import '../services/history_service.dart';
 import '../widgets/debug_board_painter.dart';
 
 class ResultScreen extends StatefulWidget {
@@ -45,6 +46,17 @@ class _ResultScreenState extends State<ResultScreen> {
         _result = result;
         _loading = false;
       });
+      // 自動儲存到歷史紀錄
+      final board = result.boardState;
+      await HistoryService.save(ScanRecord(
+        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        timestamp: DateTime.now(),
+        imagePath: widget.imagePath,
+        rows: board.rows,
+        cols: board.cols,
+        blackCount: board.blackCount,
+        whiteCount: board.whiteCount,
+      ));
     } catch (e) {
       setState(() {
         _error = e.toString();
