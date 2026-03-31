@@ -18,6 +18,8 @@ class _ResultScreenState extends State<ResultScreen> {
   String? _error;
   bool _loading = true;
   bool _showDebugOverlay = true;
+  bool _editMode = false;
+  BoardState? _editableBoard;
   final List<String> _logs = [];
 
   @override
@@ -59,6 +61,16 @@ class _ResultScreenState extends State<ResultScreen> {
         actions: [
           if (_result != null) ...[
             IconButton(
+              icon: Icon(_editMode ? Icons.edit_off : Icons.edit),
+              onPressed: () => setState(() {
+                _editMode = !_editMode;
+                if (_editMode && _editableBoard == null) {
+                  _editableBoard = _result!.boardState;
+                }
+              }),
+              tooltip: '手動修正',
+            ),
+            IconButton(
               icon: const Icon(Icons.share),
               onPressed: _exportSgf,
               tooltip: '匯出 SGF',
@@ -98,16 +110,39 @@ class _ResultScreenState extends State<ResultScreen> {
   }
 
   Future<void> _exportSgf() async {
-    final board = _result!.boardState;
+    final board = _editMode ? (_editableBoard ?? _result!.boardState) : _result!.boardState;
     final sgf = SgfExport.toSgf(board, comment: '由 BoardScanner 辨識匯出');
     final tempFile = File('${Directory.systemTemp.path}/board_scan.sgf');
     await tempFile.writeAsString(sgf);
     await Share.shareXFiles([XFile(tempFile.path)]);
   }
 
+  void _handleBoardTap(TapDownDetails details, Size boardSize, BoardState board) {
+    final padding = boardSize.shortestSide * 0.04;
+    final cellW = (boardSize.width - padding * 2) / (board.cols - 1);
+    final cellH = (boardSize.height - padding * 2) / (board.rows - 1);
+
+    final col = ((details.localPosition.dx - padding) / cellW).round();
+    final row = ((details.localPosition.dy - padding) / cellH).round();
+
+    if (row < 0 || row >= board.rows || col < 0 || col >= board.cols) return;
+
+    final current = board.getStone(row, col);
+    final next = switch (current) {
+      StoneColor.empty => StoneColor.black,
+      StoneColor.black => StoneColor.white,
+      StoneColor.white => StoneColor.empty,
+    };
+
+    setState(() {
+      _editableBoard = board.setStone(row, col, next);
+    });
+  }
+  }
+
   Widget _buildResult() {
     final result = _result!;
-    final board = result.boardState;
+    final board = _editMode ? (_editableBoard ?? result.boardState) : result.boardState;
     final debug = result.debugInfo;
 
     return SingleChildScrollView(
@@ -137,11 +172,29 @@ class _ResultScreenState extends State<ResultScreen> {
               aspectRatio: board.cols / board.rows,
               child: Padding(
                 padding: const EdgeInsets.all(16),
-                child: CustomPaint(
-                  painter: DebugBoardPainter(boardState: board),
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final boardSize = Size(constraints.maxWidth, constraints.maxWidth * board.rows / board.cols);
+                    return GestureDetector(
+                      onTapDown: _editMode
+                          ? (details) => _handleBoardTap(details, boardSize, board)
+                          : null,
+                      child: CustomPaint(
+                        painter: DebugBoardPainter(boardState: board),
+                      ),
+                    );
+                  },
                 ),
               ),
             ),
+            if (_editMode)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Text(
+                  '點擊交叉點修正：空 → 黑 → 白 → 空',
+                  style: TextStyle(color: Colors.orange[800], fontSize: 13),
+                ),
+              ),
           ],
 
           // Debug info
