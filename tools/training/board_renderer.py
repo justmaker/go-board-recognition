@@ -20,6 +20,10 @@ def _margin(board_size: int) -> int:
     return (IMAGE_SIZE - (board_size - 1) * CELL_SIZE) // 2
 
 
+def _board_pixel_size(board_size: int) -> int:
+    return (board_size - 1) * CELL_SIZE + 2 * _margin(board_size)
+
+
 def _intersection_xy(row: int, col: int, board_size: int) -> tuple:
     """Get pixel coordinates of an intersection."""
     m = _margin(board_size)
@@ -183,6 +187,207 @@ def _render_dark(board: BoardState, seed: int = 0) -> Image.Image:
 
 
 # ============================================================
+# Style: 101weiqi / Fox Weiqi — green-tinted board
+# ============================================================
+
+def _render_green(board: BoardState, seed: int = 0) -> Image.Image:
+    rng = random.Random(seed)
+    size = _board_pixel_size(board.size)
+    m = _margin(board.size)
+
+    bg_r = rng.randint(180, 200)
+    bg_g = rng.randint(195, 215)
+    bg_b = rng.randint(140, 165)
+    img = Image.new('RGB', (size, size), (bg_r, bg_g, bg_b))
+    draw = ImageDraw.Draw(img)
+
+    line_color = (80, 70, 50)
+    for i in range(board.size):
+        x = MARGIN + i * CELL_SIZE
+        y = MARGIN + i * CELL_SIZE
+        draw.line([(x, MARGIN), (x, MARGIN + (board.size - 1) * CELL_SIZE)],
+                  fill=line_color, width=1)
+        draw.line([(MARGIN, y), (MARGIN + (board.size - 1) * CELL_SIZE, y)],
+                  fill=line_color, width=1)
+
+    for r, c in _get_star_points(board.size):
+        x, y = _intersection_xy(r, c, board.size)
+        draw.ellipse([x - 3, y - 3, x + 3, y + 3], fill=line_color)
+
+    stone_r = int(CELL_SIZE * 0.44)
+    for r in range(board.size):
+        for c in range(board.size):
+            color = board.grid[r][c]
+            if color == EMPTY:
+                continue
+            x, y = _intersection_xy(r, c, board.size)
+            if color == BLACK:
+                draw.ellipse([x - stone_r, y - stone_r, x + stone_r, y + stone_r],
+                            fill=(20, 20, 20))
+            else:
+                draw.ellipse([x - stone_r, y - stone_r, x + stone_r, y + stone_r],
+                            fill=(248, 248, 245), outline=(190, 190, 185), width=1)
+    return img
+
+
+# ============================================================
+# Style: OGS-like — warm brown board with subtle texture
+# ============================================================
+
+def _render_ogs(board: BoardState, seed: int = 0) -> Image.Image:
+    rng = random.Random(seed)
+    size = _board_pixel_size(board.size)
+    m = _margin(board.size)
+
+    base_r = rng.randint(210, 230)
+    base_g = rng.randint(180, 195)
+    base_b = rng.randint(130, 150)
+    img = Image.new('RGB', (size, size), (base_r, base_g, base_b))
+    draw = ImageDraw.Draw(img)
+
+    line_color = (50, 40, 30)
+    line_w = 1
+    for i in range(board.size):
+        x = MARGIN + i * CELL_SIZE
+        y = MARGIN + i * CELL_SIZE
+        draw.line([(x, MARGIN), (x, MARGIN + (board.size - 1) * CELL_SIZE)],
+                  fill=line_color, width=line_w)
+        draw.line([(MARGIN, y), (MARGIN + (board.size - 1) * CELL_SIZE, y)],
+                  fill=line_color, width=line_w)
+
+    for r, c in _get_star_points(board.size):
+        x, y = _intersection_xy(r, c, board.size)
+        draw.ellipse([x - 3, y - 3, x + 3, y + 3], fill=line_color)
+
+    stone_r = int(CELL_SIZE * 0.42)
+    for r in range(board.size):
+        for c in range(board.size):
+            color = board.grid[r][c]
+            if color == EMPTY:
+                continue
+            x, y = _intersection_xy(r, c, board.size)
+            if color == BLACK:
+                # Slight gradient
+                for i_r in range(stone_r, 0, -1):
+                    shade = int(15 + 25 * (1 - i_r / stone_r))
+                    draw.ellipse([x - i_r, y - i_r, x + i_r, y + i_r],
+                                fill=(shade, shade, shade))
+            else:
+                for i_r in range(stone_r, 0, -1):
+                    shade = int(250 - 25 * (1 - i_r / stone_r))
+                    draw.ellipse([x - i_r, y - i_r, x + i_r, y + i_r],
+                                fill=(shade, shade, shade - 3))
+                draw.arc([x - stone_r, y - stone_r, x + stone_r, y + stone_r],
+                        0, 360, fill=(195, 195, 190), width=1)
+    return img
+
+
+# ============================================================
+# Style: Yicheng / Tygem — reddish-brown wood
+# ============================================================
+
+def _render_redwood(board: BoardState, seed: int = 0) -> Image.Image:
+    rng = random.Random(seed)
+    size = _board_pixel_size(board.size)
+    m = _margin(board.size)
+
+    base_r = rng.randint(195, 215)
+    base_g = rng.randint(145, 165)
+    base_b = rng.randint(90, 115)
+    img = Image.new('RGB', (size, size), (base_r, base_g, base_b))
+    draw = ImageDraw.Draw(img)
+
+    # Wood grain
+    pixels = np.array(img, dtype=np.float32)
+    for y_idx in range(pixels.shape[0]):
+        streak = math.sin(y_idx * 0.12 + seed) * 6
+        pixels[y_idx, :, :] += streak
+    noise = np.random.RandomState(seed).normal(0, 4, pixels.shape)
+    pixels = np.clip(pixels + noise, 0, 255).astype(np.uint8)
+    img = Image.fromarray(pixels)
+    draw = ImageDraw.Draw(img)
+
+    line_color = (35, 25, 15)
+    for i in range(board.size):
+        x = MARGIN + i * CELL_SIZE
+        y = MARGIN + i * CELL_SIZE
+        draw.line([(x, MARGIN), (x, MARGIN + (board.size - 1) * CELL_SIZE)],
+                  fill=line_color, width=1)
+        draw.line([(MARGIN, y), (MARGIN + (board.size - 1) * CELL_SIZE, y)],
+                  fill=line_color, width=1)
+
+    for r, c in _get_star_points(board.size):
+        x, y = _intersection_xy(r, c, board.size)
+        draw.ellipse([x - 3, y - 3, x + 3, y + 3], fill=line_color)
+
+    stone_r = int(CELL_SIZE * 0.43)
+    for r in range(board.size):
+        for c in range(board.size):
+            color = board.grid[r][c]
+            if color == EMPTY:
+                continue
+            x, y = _intersection_xy(r, c, board.size)
+            if color == BLACK:
+                draw.ellipse([x - stone_r, y - stone_r, x + stone_r, y + stone_r],
+                            fill=(25, 25, 25))
+                hx, hy = x - stone_r // 3, y - stone_r // 3
+                draw.ellipse([hx - 1, hy - 1, hx + 1, hy + 1], fill=(65, 65, 65))
+            else:
+                draw.ellipse([x - stone_r, y - stone_r, x + stone_r, y + stone_r],
+                            fill=(242, 240, 235), outline=(175, 170, 165), width=1)
+    return img
+
+
+# ============================================================
+# Style: High contrast screenshot (like phone screenshots)
+# ============================================================
+
+def _render_screenshot(board: BoardState, seed: int = 0) -> Image.Image:
+    """Simulates a typical phone app screenshot with very clean colors."""
+    rng = random.Random(seed)
+    size = _board_pixel_size(board.size)
+    m = _margin(board.size)
+
+    # Very consistent, clean background — typical of app screenshots
+    bg_val = rng.randint(220, 240)
+    bg_g_off = rng.randint(-5, 10)
+    bg_b_off = rng.randint(-30, -10)
+    img = Image.new('RGB', (size, size), (bg_val, bg_val + bg_g_off, bg_val + bg_b_off))
+    draw = ImageDraw.Draw(img)
+
+    line_color = (30, 30, 30)
+    for i in range(board.size):
+        x = MARGIN + i * CELL_SIZE
+        y = MARGIN + i * CELL_SIZE
+        draw.line([(x, MARGIN), (x, MARGIN + (board.size - 1) * CELL_SIZE)],
+                  fill=line_color, width=1)
+        draw.line([(MARGIN, y), (MARGIN + (board.size - 1) * CELL_SIZE, y)],
+                  fill=line_color, width=1)
+
+    for r, c in _get_star_points(board.size):
+        x, y = _intersection_xy(r, c, board.size)
+        draw.ellipse([x - 4, y - 4, x + 4, y + 4], fill=line_color)
+
+    stone_r = int(CELL_SIZE * 0.45)
+    for r in range(board.size):
+        for c in range(board.size):
+            color = board.grid[r][c]
+            if color == EMPTY:
+                continue
+            x, y = _intersection_xy(r, c, board.size)
+            if color == BLACK:
+                # Pure black, very clean
+                draw.ellipse([x - stone_r, y - stone_r, x + stone_r, y + stone_r],
+                            fill=(10, 10, 10))
+            else:
+                # White close to background — the hard case!
+                w_val = rng.randint(245, 255)
+                draw.ellipse([x - stone_r, y - stone_r, x + stone_r, y + stone_r],
+                            fill=(w_val, w_val, w_val), outline=(170, 170, 165), width=1)
+    return img
+
+
+# ============================================================
 # Utility
 # ============================================================
 
@@ -203,6 +408,10 @@ STYLES = {
     'wood': _render_wood,
     'app': _render_app,
     'dark': _render_dark,
+    'green': _render_green,
+    'ogs': _render_ogs,
+    'redwood': _render_redwood,
+    'screenshot': _render_screenshot,
 }
 
 
