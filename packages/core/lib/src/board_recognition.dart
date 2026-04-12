@@ -11,20 +11,26 @@ class _IntersectionSample {
   final double avgV;
   final double avgS;
   final double stdV;
+
   /// Edge density: average gradient magnitude in the sample area.
   /// Stones (smooth round objects) have high edge density at their border;
   /// empty intersections only have thin grid lines.
   final double edgeDensity;
+
   /// Estimated local board/background brightness around this intersection.
   final double localBoardV;
+
   /// Difference between center brightness and local board brightness.
   /// Negative => darker than board (black stone-like), positive => brighter.
   final double centerDeltaV;
+
   /// Whether the horizontal grid line still passes through this intersection.
   /// Empty intersections tend to preserve the line; occupied ones occlude it.
   final double horizontalLineStrength;
+
   /// Whether the vertical grid line still passes through this intersection.
   final double verticalLineStrength;
+
   /// Ring-shaped edge response around the expected stone radius.
   /// Stones tend to create a circular edge band, empty points do not.
   final double ringEdgeStrength;
@@ -48,6 +54,7 @@ class _IntersectionSample {
 class RecognitionResult {
   final BoardState boardState;
   final RecognitionDebugInfo debugInfo;
+
   /// 透視校正後的影像（可用於 debug overlay）
   final cv.Mat? warpedImage;
 
@@ -79,7 +86,8 @@ class BoardRecognition {
   bool _isLeftEdge = true;
   bool _isRightEdge = true;
 
-  BoardRecognition({this.onLog, this.keepWarpedImage = false, this.useCNN = false});
+  BoardRecognition(
+      {this.onLog, this.keepWarpedImage = false, this.useCNN = false});
 
   /// Whether to use CNN for stone classification instead of V-distance.
   bool useCNN;
@@ -133,7 +141,8 @@ class BoardRecognition {
     final (rows, cols, intersections) = _detectGridLines(warped);
     final grid = useCNN
         ? _detectStonesCNN(warped, rows, cols, intersections)
-        : _detectStones(warped, rows, cols, intersections);    final result = RecognitionResult(
+        : _detectStones(warped, rows, cols, intersections);
+    final result = RecognitionResult(
       boardState: BoardState(
         rows: rows,
         cols: cols,
@@ -159,14 +168,16 @@ class BoardRecognition {
     // 方法 A：顏色偵測 — 嚴格範圍（實拍棋盤）
     var warped = _findBoardByColor(original, 12, 35, 50, 100);
     if (warped != null) {
-      _log('[BoardRecognition] 板面偵測: 顏色 (Strict), warped=${warped.cols}x${warped.rows}');
+      _log(
+          '[BoardRecognition] 板面偵測: 顏色 (Strict), warped=${warped.cols}x${warped.rows}');
       return warped;
     }
 
     // 方法 A2：顏色偵測 — 寬鬆範圍（截圖/螢幕翻拍，色彩較淡）
     warped = _findBoardByColor(original, 8, 42, 15, 50);
     if (warped != null) {
-      _log('[BoardRecognition] 板面偵測: 顏色 (Loose), warped=${warped.cols}x${warped.rows}');
+      _log(
+          '[BoardRecognition] 板面偵測: 顏色 (Loose), warped=${warped.cols}x${warped.rows}');
       return warped;
     }
 
@@ -181,7 +192,8 @@ class BoardRecognition {
 
     var edgeWarped = _findBoardByContours(dilated, original);
     if (edgeWarped != null) {
-      _log('[BoardRecognition] 板面偵測: 輪廓 (Convex Hull), warped=${edgeWarped.cols}x${edgeWarped.rows}');
+      _log(
+          '[BoardRecognition] 板面偵測: 輪廓 (Convex Hull), warped=${edgeWarped.cols}x${edgeWarped.rows}');
       gray.dispose();
       blurred.dispose();
       edges.dispose();
@@ -198,11 +210,13 @@ class BoardRecognition {
     dilated.dispose();
 
     if (houghWarped != null) {
-      _log('[BoardRecognition] 板面偵測: Hough Lines, warped=${houghWarped.cols}x${houghWarped.rows}');
+      _log(
+          '[BoardRecognition] 板面偵測: Hough Lines, warped=${houghWarped.cols}x${houghWarped.rows}');
       return houghWarped;
     }
 
-    _log('[BoardRecognition] 板面偵測: 全部失敗，使用原圖 ${original.cols}x${original.rows}');
+    _log(
+        '[BoardRecognition] 板面偵測: 全部失敗，使用原圖 ${original.cols}x${original.rows}');
     return original.clone();
   }
 
@@ -210,10 +224,8 @@ class BoardRecognition {
       cv.Mat original, int hLow, int hHigh, int sLow, int vLow) {
     final hsv = cv.cvtColor(original, cv.COLOR_BGR2HSV);
 
-    final lower =
-        cv.Mat.fromList(1, 3, cv.MatType.CV_8UC3, [hLow, sLow, vLow]);
-    final upper =
-        cv.Mat.fromList(1, 3, cv.MatType.CV_8UC3, [hHigh, 255, 255]);
+    final lower = cv.Mat.fromList(1, 3, cv.MatType.CV_8UC3, [hLow, sLow, vLow]);
+    final upper = cv.Mat.fromList(1, 3, cv.MatType.CV_8UC3, [hHigh, 255, 255]);
     final mask = cv.inRange(hsv, lower, upper);
     hsv.dispose();
     lower.dispose();
@@ -251,7 +263,8 @@ class BoardRecognition {
     final totalArea = original.rows * original.cols;
     final ratio = maxArea / totalArea;
     if (bestContour == null || ratio < 0.10) {
-      _log('[BoardRecognition] 顏色偵測(H=$hLow-$hHigh S>=$sLow V>=$vLow): 面積不足 ${(ratio * 100).toStringAsFixed(1)}%');
+      _log(
+          '[BoardRecognition] 顏色偵測(H=$hLow-$hHigh S>=$sLow V>=$vLow): 面積不足 ${(ratio * 100).toStringAsFixed(1)}%');
       return null;
     }
 
@@ -367,12 +380,12 @@ class BoardRecognition {
       final d = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
       if (d == 0) return null;
 
-      final px = ((x1 * y2 - y1 * x2) * (x3 - x4) -
-              (x1 - x2) * (x3 * y4 - y3 * x4)) /
-          d;
-      final py = ((x1 * y2 - y1 * x2) * (y3 - y4) -
-              (y1 - y2) * (x3 * y4 - y3 * x4)) /
-          d;
+      final px =
+          ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) /
+              d;
+      final py =
+          ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) /
+              d;
       return cv.Point2f(px, py);
     }
 
@@ -498,7 +511,8 @@ class BoardRecognition {
       angles.sort();
       final medianAngle = angles[angles.length ~/ 2];
       if (medianAngle.abs() > 0.005) {
-        _log('[BoardRecognition] 應用旋轉校正: ${(medianAngle * 180 / pi).toStringAsFixed(2)}度');
+        _log(
+            '[BoardRecognition] 應用旋轉校正: ${(medianAngle * 180 / pi).toStringAsFixed(2)}度');
         final center = cv.Point2f(size / 2, size / 2);
         final rotMat =
             cv.getRotationMatrix2D(center, medianAngle * 180 / pi, 1.0);
@@ -578,20 +592,20 @@ class BoardRecognition {
         .where((p) => p >= edgeMargin && p <= size - edgeMargin)
         .toList();
 
-    _log('[BoardRecognition] Hough: H=${hClusters.length}, V=${vClusters.length}');
+    _log(
+        '[BoardRecognition] Hough: H=${hClusters.length}, V=${vClusters.length}');
     _log('[BoardRecognition] Dips: H=${hDips.length}, V=${vDips.length}');
-    _log('[BoardRecognition] Combined: H=${hCombined.length}, V=${vCombined.length}');
-    _log('[BoardRecognition] Edge filtered: H=${hFiltered.length}, V=${vFiltered.length}');
+    _log(
+        '[BoardRecognition] Combined: H=${hCombined.length}, V=${vCombined.length}');
+    _log(
+        '[BoardRecognition] Edge filtered: H=${hFiltered.length}, V=${vFiltered.length}');
 
     // === 暴力搜尋 H/V 各自的最佳間距和相位 ===
-    var (hSpacing, hPhase, hInl) =
-        _findBestSpacing(hFiltered, size.toDouble());
-    var (vSpacing, vPhase, vInl) =
-        _findBestSpacing(vFiltered, size.toDouble());
+    var (hSpacing, hPhase, hInl) = _findBestSpacing(hFiltered, size.toDouble());
+    var (vSpacing, vPhase, vInl) = _findBestSpacing(vFiltered, size.toDouble());
 
     // Cross-validate
-    final spacingDiff =
-        (hSpacing - vSpacing).abs() / max(hSpacing, vSpacing);
+    final spacingDiff = (hSpacing - vSpacing).abs() / max(hSpacing, vSpacing);
     if (spacingDiff > 0.15) {
       if (hInl >= vInl) {
         final (newPhase, newInl) = _findBestPhase(vFiltered, hSpacing);
@@ -608,10 +622,8 @@ class BoardRecognition {
       }
     }
 
-    var hLines =
-        _generateGridFromSpacing(hPhase, hSpacing, size.toDouble());
-    var vLines =
-        _generateGridFromSpacing(vPhase, vSpacing, size.toDouble());
+    var hLines = _generateGridFromSpacing(hPhase, hSpacing, size.toDouble());
+    var vLines = _generateGridFromSpacing(vPhase, vSpacing, size.toDouble());
 
     // === 邊緣留白分析：判斷是完整棋盤還是局部盤面 ===
     final spacing = hInl >= vInl ? hSpacing : vSpacing;
@@ -679,10 +691,8 @@ class BoardRecognition {
       vFinal = _refineToProjection(vLines, vSmooth, vSpacing);
     } else {
       // 完整棋盤：trimToSize 再 refine
-      final hTrimmed =
-          _trimToSize(hLines, rows, hSpacing, size.toDouble());
-      final vTrimmed =
-          _trimToSize(vLines, cols, vSpacing, size.toDouble());
+      final hTrimmed = _trimToSize(hLines, rows, hSpacing, size.toDouble());
+      final vTrimmed = _trimToSize(vLines, cols, vSpacing, size.toDouble());
       hFinal = _refineToProjection(hTrimmed, hSmooth, hSpacing);
       vFinal = _refineToProjection(vTrimmed, vSmooth, vSpacing);
     }
@@ -696,7 +706,8 @@ class BoardRecognition {
       intersections.add(row);
     }
 
-    _log('[BoardRecognition] 間距: H=${hSpacing.toStringAsFixed(1)} (inl=$hInl), V=${vSpacing.toStringAsFixed(1)} (inl=$vInl)');
+    _log(
+        '[BoardRecognition] 間距: H=${hSpacing.toStringAsFixed(1)} (inl=$hInl), V=${vSpacing.toStringAsFixed(1)} (inl=$vInl)');
     _log('[BoardRecognition] 格線: ${rows}x$cols (partial=$_isPartialBoard)');
 
     return (rows, cols, intersections);
@@ -1095,9 +1106,9 @@ class BoardRecognition {
 
         final skipEdge = _isPartialBoard &&
             ((r == 0 && !_isTopEdge) ||
-             (r == rows - 1 && !_isBottomEdge) ||
-             (c == 0 && !_isLeftEdge) ||
-             (c == cols - 1 && !_isRightEdge));
+                (r == rows - 1 && !_isBottomEdge) ||
+                (c == 0 && !_isLeftEdge) ||
+                (c == cols - 1 && !_isRightEdge));
 
         if (skipEdge ||
             x < ringOuter ||
@@ -1149,7 +1160,8 @@ class BoardRecognition {
               centerCount++;
             }
 
-            if (dist2 >= ringInner * ringInner && dist2 <= ringOuter * ringOuter) {
+            if (dist2 >= ringInner * ringInner &&
+                dist2 <= ringOuter * ringOuter) {
               ringEdge += edgeMap.atPixel(sy, sx)[0] > 0 ? 1.0 : 0.0;
               ringCount++;
             }
@@ -1161,7 +1173,8 @@ class BoardRecognition {
             }
 
             if (dy.abs() <= lineThickness && dx.abs() <= lineHalfLength) {
-              horizontalLine += 255.0 - grayForEdge.atPixel(sy, sx)[0].toDouble();
+              horizontalLine +=
+                  255.0 - grayForEdge.atPixel(sy, sx)[0].toDouble();
               horizontalCount++;
             }
             if (dx.abs() <= lineThickness && dy.abs() <= lineHalfLength) {
@@ -1177,10 +1190,13 @@ class BoardRecognition {
         final stdV = sqrt(max(0, variance));
         final edgeDensity = totalEdge / sampleCount;
         final centerMeanV = centerCount > 0 ? centerV / centerCount : avgV;
-        final boardMeanV = localBoardCount > 0 ? localBoardV / localBoardCount : avgV;
+        final boardMeanV =
+            localBoardCount > 0 ? localBoardV / localBoardCount : avgV;
         final centerDeltaV = centerMeanV - boardMeanV;
-        final horizontalLineStrength = horizontalCount > 0 ? horizontalLine / horizontalCount : 0.0;
-        final verticalLineStrength = verticalCount > 0 ? verticalLine / verticalCount : 0.0;
+        final horizontalLineStrength =
+            horizontalCount > 0 ? horizontalLine / horizontalCount : 0.0;
+        final verticalLineStrength =
+            verticalCount > 0 ? verticalLine / verticalCount : 0.0;
         final ringEdgeStrength = ringCount > 0 ? ringEdge / ringCount : 0.0;
 
         samples.add(_IntersectionSample(
@@ -1223,7 +1239,8 @@ class BoardRecognition {
     final linePresenceValues = validSamples
         .map((s) => (s.horizontalLineStrength + s.verticalLineStrength) / 2.0)
         .toList();
-    final absDeltaValues = validSamples.map((s) => s.centerDeltaV.abs()).toList();
+    final absDeltaValues =
+        validSamples.map((s) => s.centerDeltaV.abs()).toList();
 
     final ringThreshold = _otsuThreshold(ringValues);
     final edgeThreshold = _otsuThreshold(edgeValues);
@@ -1241,7 +1258,8 @@ class BoardRecognition {
     final occupiedCandidates = <_IntersectionSample>[];
     for (final s in validSamples) {
       final highStdV = s.stdV > medianStdV * 2.5;
-      final linePresence = (s.horizontalLineStrength + s.verticalLineStrength) / 2.0;
+      final linePresence =
+          (s.horizontalLineStrength + s.verticalLineStrength) / 2.0;
       final lineOccluded = linePresence < linePresenceThreshold;
       final strongRing = s.ringEdgeStrength >= ringThreshold;
       final strongEdge = s.edgeDensity >= edgeThreshold;
@@ -1250,15 +1268,17 @@ class BoardRecognition {
       final occupied = !highStdV &&
           s.avgS < satLimit &&
           ((strongRing && (strongDelta || strongEdge)) ||
-           (lineOccluded && strongDelta) ||
-           (strongEdge && strongDelta));
+              (lineOccluded && strongDelta) ||
+              (strongEdge && strongDelta));
 
       if (occupied) occupiedCandidates.add(s);
     }
 
     // Stage B: occupied => black/white via local board delta
     final bwThreshold = max(deltaThreshold * 0.6, 6.0);
-    debug.clusterCenters = [_median(validSamples.map((s) => s.localBoardV).toList())];
+    debug.clusterCenters = [
+      _median(validSamples.map((s) => s.localBoardV).toList())
+    ];
     debug.thresholdBlackBoard = -bwThreshold;
     debug.thresholdBoardWhite = bwThreshold;
 
@@ -1274,7 +1294,8 @@ class BoardRecognition {
 
     debug.emptyCount = rows * cols - debug.blackCount - debug.whiteCount;
 
-    _log('[BoardRecognition] occupied=${occupiedCandidates.length}/${validSamples.length}, '
+    _log(
+        '[BoardRecognition] occupied=${occupiedCandidates.length}/${validSamples.length}, '
         'bwThreshold=${bwThreshold.toStringAsFixed(1)}, '
         '棋子: 黑=${debug.blackCount}, 白=${debug.whiteCount}, 空=${debug.emptyCount}');
 
@@ -1321,9 +1342,9 @@ class BoardRecognition {
         // Skip edges for partial boards
         final skipEdge = _isPartialBoard &&
             ((r == 0 && !_isTopEdge) ||
-             (r == rows - 1 && !_isBottomEdge) ||
-             (c == 0 && !_isLeftEdge) ||
-             (c == cols - 1 && !_isRightEdge));
+                (r == rows - 1 && !_isBottomEdge) ||
+                (c == 0 && !_isLeftEdge) ||
+                (c == cols - 1 && !_isRightEdge));
 
         if (skipEdge ||
             x < patchRadius ||
@@ -1357,7 +1378,8 @@ class BoardRecognition {
 
     debug.emptyCount = rows * cols - debug.blackCount - debug.whiteCount;
 
-    _log('[BoardRecognition] CNN 結果: 黑=${debug.blackCount}, 白=${debug.whiteCount}, 空=${debug.emptyCount}');
+    _log(
+        '[BoardRecognition] CNN 結果: 黑=${debug.blackCount}, 白=${debug.whiteCount}, 空=${debug.emptyCount}');
 
     debug.isPartialBoard = _isPartialBoard;
     debug.isTopEdge = _isTopEdge;
