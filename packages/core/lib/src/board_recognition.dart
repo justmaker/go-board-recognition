@@ -15,6 +15,19 @@ class _IntersectionSample {
   /// Stones (smooth round objects) have high edge density at their border;
   /// empty intersections only have thin grid lines.
   final double edgeDensity;
+  /// Estimated local board/background brightness around this intersection.
+  final double localBoardV;
+  /// Difference between center brightness and local board brightness.
+  /// Negative => darker than board (black stone-like), positive => brighter.
+  final double centerDeltaV;
+  /// Whether the horizontal grid line still passes through this intersection.
+  /// Empty intersections tend to preserve the line; occupied ones occlude it.
+  final double horizontalLineStrength;
+  /// Whether the vertical grid line still passes through this intersection.
+  final double verticalLineStrength;
+  /// Ring-shaped edge response around the expected stone radius.
+  /// Stones tend to create a circular edge band, empty points do not.
+  final double ringEdgeStrength;
 
   _IntersectionSample({
     required this.row,
@@ -23,6 +36,11 @@ class _IntersectionSample {
     required this.avgS,
     required this.stdV,
     this.edgeDensity = 0.0,
+    this.localBoardV = 0.0,
+    this.centerDeltaV = 0.0,
+    this.horizontalLineStrength = 0.0,
+    this.verticalLineStrength = 0.0,
+    this.ringEdgeStrength = 0.0,
   });
 }
 
@@ -976,6 +994,14 @@ class BoardRecognition {
     return clusters;
   }
 
+  double _median(List<double> values) {
+    if (values.isEmpty) return 0.0;
+    final sorted = List<double>.from(values)..sort();
+    final mid = sorted.length ~/ 2;
+    if (sorted.length.isOdd) return sorted[mid];
+    return (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+
   /// Otsu's method：找到最佳門檻將一維數值分成兩群
   /// 最大化 inter-class variance → 自適應，不需硬編碼參數
   double _otsuThreshold(List<double> values) {
@@ -1041,19 +1067,24 @@ class BoardRecognition {
     debug.detectedCols = cols;
 
     final hsv = cv.cvtColor(warped, cv.COLOR_BGR2HSV);
-    // Compute edge map for edge density feature
     final grayForEdge = cv.cvtColor(warped, cv.COLOR_BGR2GRAY);
     final blurForEdge = cv.gaussianBlur(grayForEdge, (3, 3), 0);
     final edgeMap = cv.canny(blurForEdge, 40, 120);
     blurForEdge.dispose();
-    grayForEdge.dispose();
 
     final grid = List.generate(
       rows,
       (_) => List.filled(cols, StoneColor.empty),
     );
 
-    final sampleRadius = (warped.cols / cols * 0.35).round();
+    final spacing = warped.cols / cols;
+    final sampleRadius = max(2, (spacing * 0.32).round());
+    final centerRadius = max(1, (spacing * 0.18).round());
+    final ringInner = max(centerRadius + 1, (spacing * 0.28).round());
+    final ringOuter = max(ringInner + 1, (spacing * 0.46).round());
+    final lineHalfLength = max(2, (spacing * 0.42).round());
+    final lineThickness = max(1, (spacing * 0.08).round());
+
     final samples = <_IntersectionSample>[];
 
     for (int r = 0; r < rows; r++) {
@@ -1062,7 +1093,6 @@ class BoardRecognition {
         final x = pt.x.round();
         final y = pt.y.round();
 
-        // 局部盤面：裁切邊的最外行/列直接跳過（warp 邊界可能有非棋盤內容）
         final skipEdge = _isPartialBoard &&
             ((r == 0 && !_isTopEdge) ||
              (r == rows - 1 && !_isBottomEdge) ||
@@ -1070,10 +1100,10 @@ class BoardRecognition {
              (c == cols - 1 && !_isRightEdge));
 
         if (skipEdge ||
-            x < sampleRadius ||
-            x >= warped.cols - sampleRadius ||
-            y < sampleRadius ||
-            y >= warped.rows - sampleRadius) {
+            x < ringOuter ||
+            x >= warped.cols - ringOuter ||
+            y < ringOuter ||
+            y >= warped.rows - ringOuter) {
           samples.add(_IntersectionSample(
             row: r,
             col: c,
@@ -1090,17 +1120,54 @@ class BoardRecognition {
         var totalEdge = 0.0;
         var sampleCount = 0;
 
+        var centerV = 0.0;
+        var centerCount = 0;
+        var localBoardV = 0.0;
+        var localBoardCount = 0;
+        var horizontalLine = 0.0;
+        var horizontalCount = 0;
+        var verticalLine = 0.0;
+        var verticalCount = 0;
+        var ringEdge = 0.0;
+        var ringCount = 0;
+
         for (int dy = -sampleRadius; dy <= sampleRadius; dy++) {
           for (int dx = -sampleRadius; dx <= sampleRadius; dx++) {
             final sx = (x + dx).clamp(0, warped.cols - 1);
             final sy = (y + dy).clamp(0, warped.rows - 1);
+            final dist2 = dx * dx + dy * dy;
             final pixel = hsv.atPixel(sy, sx);
-            totalS += pixel[1];
             final v = pixel[2].toDouble();
+            totalS += pixel[1];
             totalV += v;
             totalV2 += v * v;
             totalEdge += edgeMap.atPixel(sy, sx)[0] > 0 ? 1.0 : 0.0;
             sampleCount++;
+
+            if (dist2 <= centerRadius * centerRadius) {
+              centerV += v;
+              centerCount++;
+            }
+
+            if (dist2 >= ringInner * ringInner && dist2 <= ringOuter * ringOuter) {
+              ringEdge += edgeMap.atPixel(sy, sx)[0] > 0 ? 1.0 : 0.0;
+              ringCount++;
+            }
+
+            if (dist2 >= (ringOuter + 1) * (ringOuter + 1) &&
+                dist2 <= (sampleRadius * sampleRadius)) {
+              localBoardV += v;
+              localBoardCount++;
+            }
+
+            if (dy.abs() <= lineThickness && dx.abs() <= lineHalfLength) {
+              horizontalLine += 255.0 - grayForEdge.atPixel(sy, sx)[0].toDouble();
+              horizontalCount++;
+            }
+            if (dx.abs() <= lineThickness && dy.abs() <= lineHalfLength) {
+              verticalLine += 255.0 - grayForEdge.atPixel(sy, sx)[0].toDouble();
+              verticalCount++;
+            }
           }
         }
 
@@ -1109,6 +1176,12 @@ class BoardRecognition {
         final variance = (totalV2 / sampleCount) - (avgV * avgV);
         final stdV = sqrt(max(0, variance));
         final edgeDensity = totalEdge / sampleCount;
+        final centerMeanV = centerCount > 0 ? centerV / centerCount : avgV;
+        final boardMeanV = localBoardCount > 0 ? localBoardV / localBoardCount : avgV;
+        final centerDeltaV = centerMeanV - boardMeanV;
+        final horizontalLineStrength = horizontalCount > 0 ? horizontalLine / horizontalCount : 0.0;
+        final verticalLineStrength = verticalCount > 0 ? verticalLine / verticalCount : 0.0;
+        final ringEdgeStrength = ringCount > 0 ? ringEdge / ringCount : 0.0;
 
         samples.add(_IntersectionSample(
           row: r,
@@ -1117,116 +1190,83 @@ class BoardRecognition {
           avgS: avgS,
           stdV: stdV,
           edgeDensity: edgeDensity,
+          localBoardV: boardMeanV,
+          centerDeltaV: centerDeltaV,
+          horizontalLineStrength: horizontalLineStrength,
+          verticalLineStrength: verticalLineStrength,
+          ringEdgeStrength: ringEdgeStrength,
         ));
       }
     }
     hsv.dispose();
     edgeMap.dispose();
+    grayForEdge.dispose();
 
-    // === V/S 值統計 ===
     final validSamples = samples.where((s) => s.avgV >= 0).toList();
     if (validSamples.isEmpty) return grid;
 
     final vValues = validSamples.map((s) => s.avgV).toList();
     final sValues = validSamples.map((s) => s.avgS).toList();
 
-    var minV = 255.0;
-    var maxV = 0.0;
-    for (final v in vValues) {
-      if (v < minV) minV = v;
-      if (v > maxV) maxV = v;
-    }
-    debug.vMin = minV;
-    debug.vMax = maxV;
+    debug.vMin = vValues.reduce(min);
+    debug.vMax = vValues.reduce(max);
 
-    final sortedS = List<double>.from(sValues)..sort();
-    final boardMedianS =
-        sortedS.isNotEmpty ? sortedS[sortedS.length ~/ 2] : 0.0;
-
-    // === Step 1：找棋盤底色（V 的眾數）===
-    const binSize = 8;
-    final bins = List.filled(256 ~/ binSize + 1, 0);
-    for (final v in vValues) {
-      bins[v.toInt() ~/ binSize]++;
-    }
-    var maxBin = 0;
-    var maxCount = 0;
-    for (int i = 0; i < bins.length; i++) {
-      if (bins[i] > maxCount) {
-        maxCount = bins[i];
-        maxBin = i;
-      }
-    }
-    final boardV = (maxBin * binSize + binSize / 2).toDouble();
-
-    // stdV 統計（用於輔助驗證）
+    final boardMedianS = _median(sValues);
     final stdVValues = validSamples.map((s) => s.stdV).toList();
-    final sortedStdV = List<double>.from(stdVValues)..sort();
-    final medianStdV = sortedStdV[sortedStdV.length ~/ 2];
-
-    // 飽和度上限
+    final medianStdV = _median(stdVValues);
     final satLimit = max(boardMedianS * 2.0, 55.0);
     debug.satLimitBlack = satLimit;
     debug.satLimitWhite = satLimit;
 
-    // Edge density statistics
+    final ringValues = validSamples.map((s) => s.ringEdgeStrength).toList();
     final edgeValues = validSamples.map((s) => s.edgeDensity).toList();
-    final sortedEdge = List<double>.from(edgeValues)..sort();
-    final medianEdge = sortedEdge[sortedEdge.length ~/ 2];
-    // Otsu on edge density to separate stones (high edges) from empty (low edges)
+    final linePresenceValues = validSamples
+        .map((s) => (s.horizontalLineStrength + s.verticalLineStrength) / 2.0)
+        .toList();
+    final absDeltaValues = validSamples.map((s) => s.centerDeltaV.abs()).toList();
+
+    final ringThreshold = _otsuThreshold(ringValues);
     final edgeThreshold = _otsuThreshold(edgeValues);
+    final linePresenceThreshold = _otsuThreshold(linePresenceValues);
+    final deltaThreshold = _otsuThreshold(absDeltaValues);
 
-    _log('[BoardRecognition] boardV=${boardV.toStringAsFixed(0)}, '
-        'medianStdV=${medianStdV.toStringAsFixed(1)}, '
-        'satLimit=${satLimit.toStringAsFixed(0)}, '
-        'medianEdge=${medianEdge.toStringAsFixed(1)}, '
-        'edgeThreshold=${edgeThreshold.toStringAsFixed(1)}');
+    _log('[BoardRecognition] local-thresholds: '
+        'delta=${deltaThreshold.toStringAsFixed(1)}, '
+        'ring=${ringThreshold.toStringAsFixed(2)}, '
+        'edge=${edgeThreshold.toStringAsFixed(2)}, '
+        'line=${linePresenceThreshold.toStringAsFixed(1)}, '
+        'medianStdV=${medianStdV.toStringAsFixed(1)}');
 
-    // === Step 2：V 距離分群 — 離棋盤底色越遠越可能是棋子 ===
-    // 棋子（黑或白）的 V 值遠離棋盤底色，空交叉點 V 接近底色
-    final distances = validSamples.map((s) => (s.avgV - boardV).abs()).toList();
-    final distThreshold = _otsuThreshold(distances);
-
-    // 收集棋子候選：
-    // Primary: V 距離夠大 + 飽和度合理 (original method)
-    // Secondary: Edge density 夠高 (rescues white stones near board color)
-    final stoneCandidates = <_IntersectionSample>[];
-    for (int i = 0; i < validSamples.length; i++) {
-      final s = validSamples[i];
-      final dist = distances[i];
+    // Stage A: occupied vs empty
+    final occupiedCandidates = <_IntersectionSample>[];
+    for (final s in validSamples) {
       final highStdV = s.stdV > medianStdV * 2.5;
+      final linePresence = (s.horizontalLineStrength + s.verticalLineStrength) / 2.0;
+      final lineOccluded = linePresence < linePresenceThreshold;
+      final strongRing = s.ringEdgeStrength >= ringThreshold;
+      final strongEdge = s.edgeDensity >= edgeThreshold;
+      final strongDelta = s.centerDeltaV.abs() >= deltaThreshold;
 
-      // Primary: V-distance method (works for black stones and obvious white)
-      final vDistCandidate = dist >= distThreshold && s.avgS < satLimit && !highStdV;
-
-      // Secondary: Edge density method — catch white stones that V-distance misses
-      // White stones have V > boardV (brighter) + high edge density (round border)
-      // but low V-distance from board color
-      final edgeCandidate = !vDistCandidate &&
-          s.edgeDensity >= edgeThreshold &&
-          s.avgV > boardV - 5 && // not too dark (not black stone or shadow)
+      final occupied = !highStdV &&
           s.avgS < satLimit &&
-          !highStdV &&
-          dist >= distThreshold * 0.3; // at least some V-distance
+          ((strongRing && (strongDelta || strongEdge)) ||
+           (lineOccluded && strongDelta) ||
+           (strongEdge && strongDelta));
 
-      if (vDistCandidate || edgeCandidate) {
-        stoneCandidates.add(s);
-      }
+      if (occupied) occupiedCandidates.add(s);
     }
 
-    _log('[BoardRecognition] V距離分群: distThreshold=${distThreshold.toStringAsFixed(1)}, '
-        '棋子候選=${stoneCandidates.length}/${validSamples.length}');
+    // Stage B: occupied => black/white via local board delta
+    final bwThreshold = max(deltaThreshold * 0.6, 6.0);
+    debug.clusterCenters = [_median(validSamples.map((s) => s.localBoardV).toList())];
+    debug.thresholdBlackBoard = -bwThreshold;
+    debug.thresholdBoardWhite = bwThreshold;
 
-    // === Step 3：黑白分類 — V < boardV → 黑，V > boardV → 白 ===
-    debug.clusterCenters = [boardV];
-    debug.thresholdBlackBoard = boardV - distThreshold;
-    debug.thresholdBoardWhite = boardV + distThreshold;
-
-    for (final s in stoneCandidates) {
-      if (s.avgV < boardV) {
+    for (final s in occupiedCandidates) {
+      if (s.centerDeltaV <= -bwThreshold) {
         grid[s.row][s.col] = StoneColor.black;
         debug.blackCount++;
-      } else {
+      } else if (s.centerDeltaV >= bwThreshold) {
         grid[s.row][s.col] = StoneColor.white;
         debug.whiteCount++;
       }
@@ -1234,9 +1274,10 @@ class BoardRecognition {
 
     debug.emptyCount = rows * cols - debug.blackCount - debug.whiteCount;
 
-    _log('[BoardRecognition] 棋子: 黑=${debug.blackCount}, 白=${debug.whiteCount}, 空=${debug.emptyCount}');
+    _log('[BoardRecognition] occupied=${occupiedCandidates.length}/${validSamples.length}, '
+        'bwThreshold=${bwThreshold.toStringAsFixed(1)}, '
+        '棋子: 黑=${debug.blackCount}, 白=${debug.whiteCount}, 空=${debug.emptyCount}');
 
-    // 邊緣分析結果寫入 debug info
     debug.isPartialBoard = _isPartialBoard;
     debug.isTopEdge = _isTopEdge;
     debug.isBottomEdge = _isBottomEdge;
